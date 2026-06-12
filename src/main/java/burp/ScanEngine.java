@@ -10,9 +10,9 @@ import burp.util.*;
 
 import javax.swing.*;
 import java.text.SimpleDateFormat;
-import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.io.File;
 import java.io.FileReader;
@@ -22,8 +22,16 @@ public class ScanEngine {
 
     private final MontoyaApi api;
     private final ExecutorService executor;
+    private static final ExecutorService TIMEOUT_EXECUTOR = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "xia_tan-probe-timeout");
+        t.setDaemon(true);
+        return t;
+    });
     private final Set<String> scannedSigs = ConcurrentHashMap.newKeySet();
     private final Map<String, Future<?>> activeScans = new ConcurrentHashMap<>();
+    // 日志批量刷新队列 + 定时器
+    private final java.util.Queue<Runnable> pendingLogs = new ConcurrentLinkedQueue<>();
+    private final javax.swing.Timer logFlushTimer;
     private ScanTableModel tableModel;
     private ProbeLogTableModel logModel;
     private final AtomicInteger resultCounter = new AtomicInteger(0);
@@ -67,7 +75,14 @@ public class ScanEngine {
 
     public ScanEngine(MontoyaApi api) {
         this.api = api;
-        this.executor = Executors.newFixedThreadPool(10);
+        this.executor = new ThreadPoolExecutor(4, 10, 60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(200),
+                r -> { Thread t = new Thread(r, "xia_tan-scan"); t.setDaemon(true); return t; },
+                new ThreadPoolExecutor.CallerRunsPolicy());
+        // 日志批量刷新：每 500ms 清空队列写入 logModel，减少 EDT 压力
+        this.logFlushTimer = new javax.swing.Timer(500, e -> flushPendingLogs());
+        logFlushTimer.setRepeats(true);
+        logFlushTimer.start();
         // 从持久化存储加载用户配置（首次启动用 properties 文件默认值）
         loadPersistedConfig();
         this.sqliStrategies = Arrays.asList(
@@ -87,6 +102,14 @@ public class ScanEngine {
     public void cancelScan(String scanId) { Future<?> f = activeScans.remove(scanId); if (f != null) f.cancel(true); }
     public void cancelAllScans() { for (Future<?> f : activeScans.values()) f.cancel(true); activeScans.clear(); }
 
+    /** 扩展卸载时清理 Timer 和线程池 */
+    public void shutdown() {
+        if (logFlushTimer != null) logFlushTimer.stop();
+        executor.shutdownNow();
+        TIMEOUT_EXECUTOR.shutdownNow();
+        AbstractInjectionStrategy.shutdownTimeoutExecutor();
+    }
+
     // ==================== 持久化配置 ====================
 
     private static File configFile() {
@@ -101,11 +124,27 @@ public class ScanEngine {
             try (java.io.FileReader reader = new java.io.FileReader(f)) {
                 p.load(reader);
             }
+            // 过滤器
+            domainWhitelist = p.getProperty("domain.whitelist", domainWhitelist);
             domainBlacklist = p.getProperty("domain.blacklist", domainBlacklist);
+            pathWhitelist   = p.getProperty("path.whitelist", pathWhitelist);
             pathBlacklist   = p.getProperty("path.blacklist", pathBlacklist);
             excludeParams   = p.getProperty("exclude.params", excludeParams);
+            // 阈值
             timeThreshold   = Long.parseLong(p.getProperty("time.threshold", String.valueOf(timeThreshold)));
             simThreshold    = Double.parseDouble(p.getProperty("sim.threshold", String.valueOf(simThreshold)));
+            delayMs         = Integer.parseInt(p.getProperty("delay.ms", String.valueOf(delayMs)));
+            // 开关
+            enableXSS       = Boolean.parseBoolean(p.getProperty("enable.xss", "true"));
+            enableSQLi      = Boolean.parseBoolean(p.getProperty("enable.sqli", "true"));
+            enableSSTI      = Boolean.parseBoolean(p.getProperty("enable.ssti", "true"));
+            enableNoSQLi    = Boolean.parseBoolean(p.getProperty("enable.nosqli", "true"));
+            enableTimeSQLi  = Boolean.parseBoolean(p.getProperty("enable.time", "true"));
+            enableCookie    = Boolean.parseBoolean(p.getProperty("enable.cookie", "false"));
+            enableWafBypass = Boolean.parseBoolean(p.getProperty("enable.waf", "true"));
+            scanAdd         = Boolean.parseBoolean(p.getProperty("scan.add", "false"));
+            scanDel         = Boolean.parseBoolean(p.getProperty("scan.del", "false"));
+            scanMod         = Boolean.parseBoolean(p.getProperty("scan.mod", "false"));
         } catch (Exception e) {
             api.logging().logToOutput("[xia_tan] 配置加载失败，使用默认值: " + e.getMessage());
         }
@@ -116,13 +155,31 @@ public class ScanEngine {
         try {
             f.getParentFile().mkdirs();
             java.util.Properties p = new java.util.Properties();
+            // 过滤器
+            p.setProperty("domain.whitelist", nvl(domainWhitelist));
             p.setProperty("domain.blacklist", nvl(domainBlacklist));
+            p.setProperty("path.whitelist", nvl(pathWhitelist));
             p.setProperty("path.blacklist", nvl(pathBlacklist));
             p.setProperty("exclude.params", nvl(excludeParams));
+            // 阈值
             p.setProperty("time.threshold", String.valueOf(timeThreshold));
             p.setProperty("sim.threshold", String.valueOf(simThreshold));
-            p.store(new java.io.FileWriter(f), "xia_tan v2.1.1 user config");
-        } catch (Exception ignored) {}
+            p.setProperty("delay.ms", String.valueOf(delayMs));
+            // 开关
+            p.setProperty("enable.xss", String.valueOf(enableXSS));
+            p.setProperty("enable.sqli", String.valueOf(enableSQLi));
+            p.setProperty("enable.ssti", String.valueOf(enableSSTI));
+            p.setProperty("enable.nosqli", String.valueOf(enableNoSQLi));
+            p.setProperty("enable.time", String.valueOf(enableTimeSQLi));
+            p.setProperty("enable.cookie", String.valueOf(enableCookie));
+            p.setProperty("enable.waf", String.valueOf(enableWafBypass));
+            p.setProperty("scan.add", String.valueOf(scanAdd));
+            p.setProperty("scan.del", String.valueOf(scanDel));
+            p.setProperty("scan.mod", String.valueOf(scanMod));
+            p.store(new java.io.FileWriter(f), "xia_tan v2.1.2 user config");
+        } catch (Exception e) {
+            api.logging().logToOutput("[xia_tan] 配置保存失败: " + e.getMessage());
+        }
     }
 
     private static String nvl(String s) { return s != null ? s : ""; }
@@ -181,9 +238,6 @@ public class ScanEngine {
             api.logging().logToOutput("[xia_tan] 🚫 SKIP domain BL: " + host + " (blocked)");
             return;
         }
-        if (cfg.domainBL != null && !cfg.domainBL.trim().isEmpty()) {
-            api.logging().logToOutput("[xia_tan] ALLOW domain: " + host + " (BL=[" + cfg.domainBL + "])");
-        }
         if (ResponseComparer.isPathBlocked(path, cfg.pathBL)) {
             api.logging().logToOutput("[xia_tan] SKIP path BL: " + path); return;
         }
@@ -220,6 +274,15 @@ public class ScanEngine {
         String baselineNoSqlErr = NoSQLiDetector.detectError(baseBody);
         Set<String> excl = parseSet(cfg.excludeP);
 
+        // 注入策略全局配置（一次设置，所有参数共享）
+        if (cfg.sqli) {
+            for (AbstractInjectionStrategy strat : sqliStrategies) {
+                strat.setSimThreshold(cfg.simThresh);
+                strat.setWafBypass(cfg.wafBypass);
+            }
+            ((ErrorBasedInjection) sqliStrategies.get(0)).setBaselineSqlErr(baselineSqlErr);
+        }
+
         // 扫描 URL/body 参数（含编码检测）
         boolean sqliFound = false;
         for (ParsedHttpParameter param : req.parameters()) {
@@ -234,7 +297,7 @@ public class ScanEngine {
 
         // 请求头注入探测（仅当 SQLi 未命中时）
         if (cfg.sqli && !sqliFound) {
-            probeHeaderInjection(req, baseBody, cfg, host, method, path, baselineSqlErr);
+            probeHeaderInjection(req, baseRR, baseBody, cfg, host, method, path, baselineSqlErr);
         }
 
         // Cookie 参数（仅当 SQLi 未命中时）
@@ -254,9 +317,11 @@ public class ScanEngine {
         "User-Agent", "Referer", "X-Forwarded-For", "X-Real-IP"
     };
 
-    private void probeHeaderInjection(HttpRequest req, String baseBody, ScanConfig cfg,
+    private void probeHeaderInjection(HttpRequest req, HttpRequestResponse baseRR,
+                                       String baseBody, ScanConfig cfg,
                                        String host, String method, String path,
                                        String baselineSqlErr) {
+        short baseCode = AbstractInjectionStrategy.statusCode(baseRR);
         for (String headerName : INJECTABLE_HEADERS) {
             String origValue = req.headerValue(headerName);
             if (origValue == null || origValue.isEmpty()) continue;
@@ -279,8 +344,8 @@ public class ScanEngine {
             String body2 = rr2.response().bodyToString();
 
             // 体量异常过滤：修改 Header 导致 404/302 → 非注入
-            if (isHeaderProbeDiffPage(baseBody, body1)
-                    || isHeaderProbeDiffPage(baseBody, body2)) continue;
+            if (AbstractInjectionStrategy.isDifferentPage(baseBody, body1, baseCode, AbstractInjectionStrategy.statusCode(rr1))
+                    || AbstractInjectionStrategy.isDifferentPage(baseBody, body2, baseCode, AbstractInjectionStrategy.statusCode(rr2))) continue;
 
             // 两个探针都产生差异才确认（排除单次网络波动）
             // 小响应体 (<500B) 用 Levenshtein 替代 Jaccard
@@ -391,15 +456,28 @@ public class ScanEngine {
 
     // ==================== Logging & Probe ====================
 
-    /** 发送探测请求并记录日志 */
+    /** 批量刷新待写入的日志（由 Timer 每 500ms 调用，清空全部积压） */
+    private void flushPendingLogs() {
+        Runnable task;
+        while ((task = pendingLogs.poll()) != null) {
+            task.run();
+        }
+    }
+
+    /** 发送探测请求并记录日志（带 20s 超时保护） */
     private HttpRequestResponse sendProbe(HttpRequest modReq, String path,
                                            String paramName, String payload) {
         long t0 = System.currentTimeMillis();
-        HttpRequestResponse rr = api.http().sendRequest(modReq);
+        HttpRequestResponse rr = null;
+        try {
+            rr = TIMEOUT_EXECUTOR.submit(() -> api.http().sendRequest(modReq))
+                    .get(20, TimeUnit.SECONDS);
+        } catch (Exception ignored) {}
         long elapsed = System.currentTimeMillis() - t0;
 
-        // ★ 记录到 Logs 标签页
-        SwingUtilities.invokeLater(() -> logProbe(modReq, rr, path, paramName, payload, elapsed));
+        // ★ 入队批量刷新（减少 EDT 压力）
+        final HttpRequestResponse finalRr = rr;
+        pendingLogs.offer(() -> logProbe(modReq, finalRr, path, paramName, payload, elapsed));
 
         return rr;
     }
@@ -434,18 +512,6 @@ public class ScanEngine {
     }
 
     // ==================== Filters & Helpers ====================
-
-    /** Header 注入专用体量异常检测 (不依赖 ThreadLocal，静态计算) */
-    private static boolean isHeaderProbeDiffPage(String base, String probe) {
-        if (base == null || probe == null) return false;
-        int bl = base.length(), pl = probe.length();
-        if (bl == 0 && pl == 0) return false;
-        if (bl == 0 || pl == 0) return true;
-        double r = (double) pl / bl;
-        if (r < 0.10 || r > 10.0) return true;
-        if (bl >= 3000 && pl < 500) return true;
-        return false;
-    }
 
     private boolean isStatic(String path) {
         // 剥离 query string，避免 style.css?v=111 绕过静态检测
@@ -506,11 +572,14 @@ public class ScanEngine {
         try {
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
             String content = req.method() + req.path() + req.bodyToString();
-            byte[] hash = md.digest(content.getBytes("UTF-8"));
+            byte[] hash = md.digest(content.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
             for (byte b : hash) sb.append(String.format("%02x", b));
             return sb.toString().substring(0, 16);
-        } catch (Exception e) { return UUID.randomUUID().toString(); }
+        } catch (Exception e) {
+            api.logging().logToOutput("[xia_tan] hashRequestBody failed: " + e.getMessage());
+            return UUID.randomUUID().toString();
+        }
     }
 
     /** 提取 Cookie 参数（仅当 Cookie 开关打开时调用） */
@@ -590,8 +659,6 @@ public class ScanEngine {
             // SQLi 策略链：链内命中即停（避免同类型重复探测）
             if (cfg.sqli) {
                 for (AbstractInjectionStrategy strat : sqliStrategies) {
-                    strat.setSimThreshold(cfg.simThresh);
-                    strat.setWafBypass(cfg.wafBypass);
                     delay(cfg);
                     HttpRequestResponse probeRR = strat.execute(req, baseRR, param, baseBody);
                     if (probeRR != null) {

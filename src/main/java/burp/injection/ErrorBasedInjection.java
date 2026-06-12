@@ -9,8 +9,10 @@ import java.util.regex.Pattern;
 
 public class ErrorBasedInjection extends AbstractInjectionStrategy {
 
-    // 基础报错探针 — 引号 + 转义 + 括号闭合
-    private static final String[] PROBES = { "'", "\"", "\\", "')", "'))", "\")" };
+    // 基础报错探针 — 最少覆盖（' / " 覆盖 95%+，') 覆盖括号闭合场景）
+    // 已移除: \（MySQL 宽字节由增强探针 %DF' 覆盖）
+    //         ')) / ")（多层括号闭合极罕见，且 ErrorBased 命中即停无需穷举）
+    private static final String[] PROBES = { "'", "\"", "')" };
 
     // 可选增强探针 — 默认关闭 (宽字节/反引号等边缘场景)
     private static final String[] PROBES_EXTENDED = {
@@ -74,17 +76,22 @@ public class ErrorBasedInjection extends AbstractInjectionStrategy {
     }
 
     private final ThreadLocal<String> lastPayload = ThreadLocal.withInitial(() -> "");
+    private final ThreadLocal<String> baselineSqlErr = ThreadLocal.withInitial(() -> null);
 
     public ErrorBasedInjection(MontoyaApi api){super(api);}
     @Override public String getName(){return"Error-Based";}
     @Override public String getVulnType(){return"errsql";}
     @Override public String getPayload(){return lastPayload.get();}
 
+    /** 由 ScanEngine 注入基线错误模式，避免 execute() 内重复扫描 10 种 DB 正则 */
+    public void setBaselineSqlErr(String err) { baselineSqlErr.set(err); }
+
     @Override
     public HttpRequestResponse execute(HttpRequest origReq, HttpRequestResponse baseRR,
                                          HttpParameter param, String baseBody){
-        // baseline 错误模式只计算一次（避免 12 次重复正则扫描）
-        String baseErr = detectError(baseBody);
+        // 使用 ScanEngine 注入的基线错误模式（避免重复正则扫描）
+        String baseErr = baselineSqlErr.get();
+        short baseCode = statusCode(baseRR);
 
         // Phase 1: 基础报错探针
         for (int i = 0; i < PROBES.length; i++) {
@@ -96,7 +103,7 @@ public class ErrorBasedInjection extends AbstractInjectionStrategy {
             // 共享 ' 探针响应给 UnifiedString 复用
             if (i == 0) setSingleQuoteProbe(rr);
             String probeBody = body(rr);
-            if (isDifferentPage(baseBody, probeBody)) continue;
+            if (isDifferentPage(baseBody, probeBody, baseCode, statusCode(rr))) continue;
             String err = detectError(probeBody);
             if (err != null && (baseErr == null || !baseErr.equals(err))) return rr;
         }
@@ -109,7 +116,7 @@ public class ErrorBasedInjection extends AbstractInjectionStrategy {
                 HttpRequestResponse rr = send(modReq);
                 if (rr == null) continue;
                 String probeBody = body(rr);
-                if (isDifferentPage(baseBody, probeBody)) continue;
+                if (isDifferentPage(baseBody, probeBody, baseCode, statusCode(rr))) continue;
                 String err = detectError(probeBody);
                 if (err != null && (baseErr == null || !baseErr.equals(err))) return rr;
             }

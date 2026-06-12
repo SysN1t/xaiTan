@@ -7,6 +7,9 @@ import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.util.EncodingDetector;
 import java.util.Base64;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public abstract class AbstractInjectionStrategy {
 
@@ -25,7 +28,19 @@ public abstract class AbstractInjectionStrategy {
     private static final ThreadLocal<HttpRequestResponse> sharedSingleQuoteProbe =
             ThreadLocal.withInitial(() -> null);
 
+    // 请求超时执行器（daemon 线程，避免阻塞扫描线程池）
+    private static final ExecutorService TIMEOUT_EXECUTOR = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "xia_tan-timeout");
+        t.setDaemon(true);
+        return t;
+    });
+
     protected AbstractInjectionStrategy(MontoyaApi api) { this.api = api; }
+
+    /** 关闭超时执行器（扩展卸载时调用） */
+    public static void shutdownTimeoutExecutor() {
+        TIMEOUT_EXECUTOR.shutdownNow();
+    }
 
     public abstract String getName();
     public abstract String getVulnType();
@@ -46,12 +61,23 @@ public abstract class AbstractInjectionStrategy {
     protected HttpRequestResponse getSingleQuoteProbe() { return sharedSingleQuoteProbe.get(); }
 
     /** 判断探针响应是否来自不同页面（体量异常 → 路由变化而非 SQLi）
-     *  双层检查：
-     *  ① 体量比：探针 <10% 或 >1000% 基线 → 不同页面
-     *  ② 绝对体积：基线 ≥3KB 但探针 <500B → 错误页/重定向（补 ratio 在小响应上的盲区）
-     *  ③ 空 body：一方有内容一方为空 → 不同页面（重定向）
+     *  ④ 状态码异常：429(限流)/403(拦截)/503(不可用) 且不同于基线 → 不同页面
+     *  ①②③ 体量比 / 绝对体积 / 空 body 检查
      */
-    protected boolean isDifferentPage(String baseBody, String probeBody) {
+    public static boolean isDifferentPage(String baseBody, String probeBody) {
+        return isDifferentPage(baseBody, probeBody, (short) 0, (short) 0);
+    }
+
+    /** 带状态码的完整检查（推荐调用此重载） */
+    public static boolean isDifferentPage(String baseBody, String probeBody,
+                                           short baseCode, short probeCode) {
+        // ④ 基础设施状态码 → 必然不是注入，直接跳过（避免相似度比较误判）
+        //    429: 限流  502: 网关错误  503: 不可用  504: 网关超时
+        //    注：403(WAF)/500(服务器错误) 不在此过滤——可能是真注入
+        if (baseCode != 0 && probeCode != 0 && baseCode != probeCode
+                && (probeCode == 429 || probeCode == 502 || probeCode == 503 || probeCode == 504)) {
+            return true;
+        }
         if (baseBody == null || probeBody == null) return false;
         int baseLen = baseBody.length();
         int probeLen = probeBody.length();
@@ -71,11 +97,22 @@ public abstract class AbstractInjectionStrategy {
                                                   HttpParameter param, String baseBody);
 
     protected HttpRequestResponse send(HttpRequest req) {
-        return api.http().sendRequest(req);
+        try {
+            return TIMEOUT_EXECUTOR.submit(() -> api.http().sendRequest(req))
+                    .get(20, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     protected String body(HttpRequestResponse rr) {
         return rr!=null && rr.response()!=null ? rr.response().bodyToString() : "";
+    }
+
+    /** 提取响应状态码（short），null/无响应返回 0 */
+    public static short statusCode(HttpRequestResponse rr) {
+        if (rr == null || rr.response() == null) return 0;
+        return (short) rr.response().statusCode();
     }
 
     protected HttpRequest modParam(HttpRequest orig, HttpParameter param, String newVal) {

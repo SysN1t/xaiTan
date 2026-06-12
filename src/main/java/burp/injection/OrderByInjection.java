@@ -20,19 +20,20 @@ public class OrderByInjection extends AbstractInjectionStrategy {
                                          HttpParameter param, String baseBody){
         // 快速预检：参数值不像列名/列索引则跳过（减少 70-90% 无效探测）
         if (!looksLikeOrderValue(param.value())) return null;
+        short baseCode = statusCode(baseRR);
 
         lastPayload.set(",0");
         HttpRequestResponse rr1 = send(append(origReq, param, lastPayload.get()));
         if(rr1==null) return null;
         String body1 = body(rr1);
-        if(isDifferentPage(baseBody, body1)) return null;
+        if(isDifferentPage(baseBody, body1, baseCode, statusCode(rr1))) return null;
         if(MyCompare.similarity(baseBody, body1) >= sim()) return null;
 
         lastPayload.set(",xxxxxx");
         HttpRequestResponse rr2 = send(append(origReq, param, lastPayload.get()));
         if(rr2==null) return null;
         String body2 = body(rr2);
-        if(isDifferentPage(baseBody, body2)) return null;
+        if(isDifferentPage(baseBody, body2, baseCode, statusCode(rr2))) return null;
         if(MyCompare.similarity(baseBody, body2) >= sim()) return null;
 
         // 交叉验证：两个错误探针应产生相似的错误页（DetSql 做法）
@@ -43,7 +44,7 @@ public class OrderByInjection extends AbstractInjectionStrategy {
         HttpRequestResponse rr3 = send(append(origReq, param, lastPayload.get()));
         if(rr3==null) return null;
         String body3 = body(rr3);
-        if(isDifferentPage(baseBody, body3)) return null;
+        if(isDifferentPage(baseBody, body3, baseCode, statusCode(rr3))) return null;
         if(MyCompare.similarity(baseBody, body3) >= sim()
                 && MyCompare.similarity(body1, body3) < sim()) return rr3;
 

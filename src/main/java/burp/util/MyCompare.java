@@ -115,6 +115,9 @@ public class MyCompare {
         return (headSim + tailSim) / 2.0;
     }
 
+    /** Levenshtein 安全上限：任一字符串超过此值则回退到 Jaccard 行级相似度 */
+    private static final int MAX_LEV = 2000;
+
     /** Levenshtein 距离 → 相似度 (优势 4: 快速失败) */
     private static double levenshteinImpl(String a, String b, double threshold) {
         if (a.equals(b)) return 1.0;
@@ -140,11 +143,12 @@ public class MyCompare {
             if (prefixDist > 50) return 0.0;
         }
 
-        // 完整 Levenshtein 计算（上限 50K 字符防止 OOM）
-        final int MAX_LEV = 50_000;
-        if (lenA > MAX_LEV) lenA = MAX_LEV;
-        if (lenB > MAX_LEV) lenB = MAX_LEV;
-        maxLen = Math.max(lenA, lenB);
+        // 任一字符串超过安全上限 → 回退到 Jaccard 行级相似度（避免 OOM）
+        if (lenA > MAX_LEV || lenB > MAX_LEV) {
+            return jaccardLineSim(a, b);
+        }
+
+        // 完整 Levenshtein 计算
         int[][] dp = new int[lenA + 1][lenB + 1];
         for (int i = 0; i <= lenA; i++) dp[i][0] = i;
         for (int j = 0; j <= lenB; j++) dp[0][j] = j;

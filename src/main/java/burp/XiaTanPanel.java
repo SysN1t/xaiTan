@@ -22,7 +22,7 @@ public class XiaTanPanel extends JPanel {
     private HttpRequestEditor requestViewer;
     private HttpResponseEditor responseViewer;
     private HttpRequestResponse currentItem;
-    private xia_tan extender;
+    private XiaTan extender;
     private JLabel statusLabel;
     private JToggleButton btnFilter;
 
@@ -35,7 +35,7 @@ public class XiaTanPanel extends JPanel {
     private static final Font  FONT_TITLE  = new Font(Font.SANS_SERIF, Font.BOLD, 12);
     private static final Font  FONT_NORMAL = new Font(Font.SANS_SERIF, Font.PLAIN, 11);
 
-    public XiaTanPanel(MontoyaApi api, ScanEngine scanEngine, xia_tan extender) {
+    public XiaTanPanel(MontoyaApi api, ScanEngine scanEngine, XiaTan extender) {
         this.api = api;
         this.scanEngine = scanEngine;
         this.extender = extender;
@@ -71,7 +71,8 @@ public class XiaTanPanel extends JPanel {
         bar.add(hint, BorderLayout.EAST);
 
         // 定时刷新状态
-        new javax.swing.Timer(2000, e -> updateStatus()).start();
+        statusTimer = new javax.swing.Timer(2000, e -> updateStatus());
+        statusTimer.start();
         return bar;
     }
 
@@ -193,23 +194,23 @@ public class XiaTanPanel extends JPanel {
         JPanel row0 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         row0.setBackground(BG_HEADER);
         row0.add(buildSwitchGroup("检测模块",
-                cb("XSS",true, v->scanEngine.enableXSS=v),
-                cb("SQLi",true, v->scanEngine.enableSQLi=v),
-                cb("SSTI",true, v->scanEngine.enableSSTI=v),
-                cb("NoSQLi",true,v->scanEngine.enableNoSQLi=v),
-                cb("延时",true, v->scanEngine.enableTimeSQLi=v),
-                cb("Cookie",false,v->scanEngine.enableCookie=v)));
+                cb("XSS",scanEngine.enableXSS, v->scanEngine.enableXSS=v),
+                cb("SQLi",scanEngine.enableSQLi, v->scanEngine.enableSQLi=v),
+                cb("SSTI",scanEngine.enableSSTI, v->scanEngine.enableSSTI=v),
+                cb("NoSQLi",scanEngine.enableNoSQLi,v->scanEngine.enableNoSQLi=v),
+                cb("延时",scanEngine.enableTimeSQLi, v->scanEngine.enableTimeSQLi=v),
+                cb("Cookie",scanEngine.enableCookie,v->scanEngine.enableCookie=v)));
         row0.add(buildSwitchGroup("WAF",
-                cb("绕过",true, v->scanEngine.enableWafBypass=v)));
+                cb("绕过",scanEngine.enableWafBypass, v->scanEngine.enableWafBypass=v)));
         row0.add(sep());
         row0.add(buildSwitchGroup("监控",
                 cb("代理",false,v->{if(extender!=null)extender.monitorProxy=v;}),
                 cb("重放",false,v->{if(extender!=null)extender.monitorRepeater=v;})));
         row0.add(sep());
         row0.add(buildSwitchGroup("CUD",
-                cb("增",false,v->scanEngine.scanAdd=v),
-                cb("删",false,v->scanEngine.scanDel=v),
-                cb("改",false,v->scanEngine.scanMod=v)));
+                cb("增",scanEngine.scanAdd,v->scanEngine.scanAdd=v),
+                cb("删",scanEngine.scanDel,v->scanEngine.scanDel=v),
+                cb("改",scanEngine.scanMod,v->scanEngine.scanMod=v)));
         g.gridy = 0; grid.add(row0, g);
 
         // Row 1: Thresholds
@@ -346,8 +347,17 @@ public class XiaTanPanel extends JPanel {
         JCheckBox c = new JCheckBox(text, def);
         c.setFont(FONT_NORMAL);
         c.setBackground(BG_HEADER);
-        c.addActionListener(e -> setter.accept(c.isSelected()));
+        c.addActionListener(e -> { setter.accept(c.isSelected()); debounceConfigSave(); });
         return c;
+    }
+
+    /** 开关/阈值变更防抖持久化（1 秒内多次变更只写一次磁盘） */
+    private void debounceConfigSave() {
+        if (configSaveDebounce == null) {
+            configSaveDebounce = new javax.swing.Timer(1000, e -> scanEngine.savePersistedConfig());
+            configSaveDebounce.setRepeats(false);
+        }
+        configSaveDebounce.restart();
     }
 
     private JLabel lbl(String text) {
@@ -429,6 +439,8 @@ public class XiaTanPanel extends JPanel {
     }
 
     private javax.swing.Timer saveDebounce;
+    private javax.swing.Timer configSaveDebounce; // 开关/阈值变更防抖持久化
+    private javax.swing.Timer statusTimer; // for cleanup on unload
 
     private void syncModel(DefaultListModel<String> model, Consumer<String> sync) {
         StringBuilder sb = new StringBuilder();
@@ -488,14 +500,14 @@ public class XiaTanPanel extends JPanel {
         });
     }
 
-    private static void syncNum(JTextField f, String fb, Consumer<String> set) {
+    private void syncNum(JTextField f, String fb, Consumer<String> set) {
         set.accept(f.getText());
         f.getDocument().addDocumentListener(new DocumentListener() {
             @Override public void insertUpdate(DocumentEvent e)  { tryParse(); }
             @Override public void removeUpdate(DocumentEvent e)  { tryParse(); }
             @Override public void changedUpdate(DocumentEvent e) { tryParse(); }
             void tryParse() {
-                try { set.accept(f.getText()); f.setBackground(Color.WHITE); }
+                try { set.accept(f.getText()); f.setBackground(Color.WHITE); debounceConfigSave(); }
                 catch (NumberFormatException x) { f.setBackground(new Color(255, 220, 220)); }
             }
         });
@@ -537,5 +549,12 @@ public class XiaTanPanel extends JPanel {
             setBorder(new EmptyBorder(1, 4, 1, 4));
             return c;
         }
+    }
+
+    /** 扩展卸载时清理 Timer 资源，避免内存泄漏 */
+    public void dispose() {
+        if (statusTimer != null) { statusTimer.stop(); statusTimer = null; }
+        if (saveDebounce != null) { saveDebounce.stop(); saveDebounce = null; }
+        if (configSaveDebounce != null) { configSaveDebounce.stop(); configSaveDebounce = null; }
     }
 }

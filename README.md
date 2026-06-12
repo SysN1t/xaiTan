@@ -1,10 +1,10 @@
-# xia_tan (瞎探) v2.1.1 — BurpSuite 多漏洞自动化探测插件
+# xia_tan (瞎探) v2.1.2 — BurpSuite 多漏洞自动化探测插件
 
 > **基于 xia_tan v1.0 二次开发** | Author: **SysN3t** | Montoya API (BurpSuite ≥ 2023.12.1) | WAF 绕过 · 最少 payload · 基础探测
 
 通过修改请求参数对常见 Web 漏洞进行**自动化初步探测**的 BurpSuite 扩展插件。支持反射 XSS、SQL 注入（4 种策略链）、SSTI 模板注入（6 大家族 20+ 引擎）、NoSQL 注入。
 
-> **v2.1.1**：Montoya API（BurpSuite ≥ 2023.12.1）。WAF 绕过、最少 payload 策略链、体量误报过滤、线程安全。
+> **v2.1.2**：Montoya API（BurpSuite ≥ 2023.12.1）。最少 payload 最大化覆盖、全配置持久化、请求超时保护、线程池背压。
 
 ---
 

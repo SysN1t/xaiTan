@@ -28,41 +28,46 @@ public class UnifiedStringInjection extends AbstractInjectionStrategy {
     @Override
     public HttpRequestResponse execute(HttpRequest origReq, HttpRequestResponse baseRR,
                                          HttpParameter param, String baseBody) {
-        // Step 0: 复用 ErrorBased 的 ' 探针响应
+        // Step 0: 优先复用 ErrorBased 的 ' 探针响应；为 null 时自行发送（防御性 fallback）
         HttpRequestResponse rr0 = getSingleQuoteProbe();
+        if (rr0 == null) {
+            rr0 = send(append(origReq, param, "'"));
+            if (rr0 != null) setSingleQuoteProbe(rr0); // 回写共享，供后续线程复用
+        }
         if (rr0 == null) return null;
+        short baseCode = statusCode(baseRR);
         String body0 = body(rr0);
         if (MyCompare.similarity(baseBody, body0) >= sim()) return null;
-        if (isDifferentPage(baseBody, body0)) return null;
+        if (isDifferentPage(baseBody, body0, baseCode, statusCode(rr0))) return null;
 
         // Step 1: '' — 双引号修复语法 (期望回到基线)
         lastPayload.set("''");
         HttpRequestResponse rr1 = send(append(origReq, param, lastPayload.get()));
         if (rr1 == null) return null;
         String body1 = body(rr1);
-        if (isDifferentPage(baseBody, body1)) return null;
+        if (isDifferentPage(baseBody, body1, baseCode, statusCode(rr1))) return null;
 
         if (MyCompare.levenshteinStripped(baseBody, body1, null, "''") >= sim()) {
             lastPayload.set("' + ''");
             return rr1; // 字符串注入确认
         }
 
-        // Step 2+3: 1=1 / 1=2 布尔盲注（依次尝试 ' / ') / ')) / " 前缀）
-        for (String prefix : new String[]{"'", "')", "'))", "\""}) {
-            HttpRequestResponse confirmed = tryBoolean(origReq, param, baseBody, prefix);
+        // Step 2+3: 1=1 / 1=2 布尔盲注（仅 ' / " 前缀；') / ')) 括号闭合由 ErrorBased 覆盖）
+        for (String prefix : new String[]{"'", "\""}) {
+            HttpRequestResponse confirmed = tryBoolean(origReq, param, baseBody, prefix, baseCode);
             if (confirmed != null) return confirmed;
         }
 
         // Fallback: Oracle/PostgreSQL '||' 拼接
-        return tryOracleFallback(origReq, param, baseBody);
+        return tryOracleFallback(origReq, param, baseBody, baseCode);
     }
 
     private HttpRequestResponse tryBoolean(HttpRequest origReq, HttpParameter param,
-                                            String baseBody, String prefix) {
+                                            String baseBody, String prefix, short baseCode) {
         // Step 2: prefix AND 1=1-- (true)
         lastPayload.set(prefix + " AND 1=1-- ");
         HttpRequestResponse rr2 = send(append(origReq, param, lastPayload.get()));
-        if (rr2 == null || isDifferentPage(baseBody, body(rr2))) return null;
+        if (rr2 == null || isDifferentPage(baseBody, body(rr2), baseCode, statusCode(rr2))) return null;
         String body2 = body(rr2);
 
         if (MyCompare.similarity(baseBody, body2) >= sim()) return null;
@@ -70,7 +75,7 @@ public class UnifiedStringInjection extends AbstractInjectionStrategy {
         // Step 3: prefix AND 1=2-- (false)
         lastPayload.set(prefix + " AND 1=2-- ");
         HttpRequestResponse rr3 = send(append(origReq, param, lastPayload.get()));
-        if (rr3 == null || isDifferentPage(baseBody, body(rr3))) return null;
+        if (rr3 == null || isDifferentPage(baseBody, body(rr3), baseCode, statusCode(rr3))) return null;
         String body3 = body(rr3);
 
         if (MyCompare.levenshteinStripped(body2, body3, "1=1", "1=2") >= sim()) return null;
@@ -81,10 +86,10 @@ public class UnifiedStringInjection extends AbstractInjectionStrategy {
     }
 
     private HttpRequestResponse tryOracleFallback(HttpRequest origReq, HttpParameter param,
-                                                   String baseBody) {
+                                                   String baseBody, short baseCode) {
         lastPayload.set("'||'||'");
         HttpRequestResponse rr = send(append(origReq, param, lastPayload.get()));
-        if (rr == null || isDifferentPage(baseBody, body(rr))) return null;
+        if (rr == null || isDifferentPage(baseBody, body(rr), baseCode, statusCode(rr))) return null;
         if (MyCompare.levenshteinStripped(baseBody, body(rr), null, "'\\|\\|'") >= sim()) {
             return rr;
         }

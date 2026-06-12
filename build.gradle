@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.xiatan'
-version = '2.1.1'
+version = '2.1.2'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
@@ -12,6 +12,10 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
 }
 
 jar {

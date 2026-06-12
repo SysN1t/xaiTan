@@ -4,9 +4,9 @@ setlocal
 set API_JAR=lib\montoya-api-2026.4.jar
 set SRC_DIR=src\main\java
 set OUT_DIR=build\classes
-set JAR_NAME=xia_tan-2.0.jar
+set JAR_NAME=xia_tan-2.1.2.jar
 
-echo [*] xia_tan v2.0 build script (Montoya API)
+echo [*] xia_tan v2.1.2 build script (Montoya API)
 
 :: Download Montoya API if not present
 if not exist lib mkdir lib

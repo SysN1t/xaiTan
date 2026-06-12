@@ -4,6 +4,53 @@ All notable changes to xia_tan.
 
 ---
 
+## v2.1.2 (2026-06-12)
+
+### SQL Injection — Minimum Payloads, Maximum Coverage
+
+- **TimeBased 探针 16→5**：移除 `')` / `")' 括号闭合前缀（ErrorBased 已覆盖）和 Oracle DBMS_PIPE（边缘场景），仅保留 `'` + `"` 前缀覆盖 MySQL/MSSQL/PostgreSQL 三大 DB
+- **ErrorBased 基础探针 6→3**：`'`, `"`, `')` 精简集。移除 `\`（增强探针 `%DF'` / `'"\\` 覆盖）、`'))` / `")`（多层括号闭合极罕见）
+- **UnifiedString 前缀 4→2**：布尔盲注前缀 `'`, `')` , `'))`, `"` 变为 `'`, `"`。`')` / `'))` 由 ErrorBased 覆盖，不重复测试
+- **NumericInjection 提前退出**：Phase 1（`-0-0-0`→`-abc`）发送探针后不执行 Phase 2（`1/0`→`1/1`）
+
+### Persistence — Full Config Save/Restore
+
+- **补全 12 个持久化字段**：模块开关 (XSS/SQLi/SSTI/NoSQLi/延时/Cookie/WAF)、CUD 开关 (增/删/改)、请求延迟、域名/路径白名单 — 全部写入 `~/.xia_tan/config.properties`，重启保留
+- **UI 变更自动持久化**：Checkbox 切换和阈值输入均触发 1 秒防抖 `savePersistedConfig()`
+
+### Real-Time Responsiveness
+
+- **请求超时保护**：`send()` 和 `sendProbe()` 添加 20 秒超时，避免挂死目标阻塞扫描线程
+- **日志批量刷新**：`ConcurrentLinkedQueue` + Swing Timer 每 500ms 清空队列写入 logModel，缓解 EDT 压力
+- **线程池背压**：`ThreadPoolExecutor(4-10, bounded-200, CallerRunsPolicy)` 替代无界 `FixedThreadPool(10)`
+
+### Critical Bug Fixes (from code review)
+
+- **Levenshtein OOM**：`MAX_LEV` 50000→2000，超限回退 Jaccard
+- **UnifiedString 静默失效**：`getSingleQuoteProbe()` 为 null 时自行发送 `'` 探针 fallback
+- **WafBypass 线程安全**：`Random` → `ThreadLocalRandom`
+- **ErrorBased 冗余正则**：由 ScanEngine 注入 `baselineSqlErr` 避免重复扫描
+- **ProbeLogTableModel 上限**：`MAX_LOG_ENTRIES=5000`
+- **配置保存失败 log**：不再静默吞噬异常
+- **类命名规范**：`xia_tan` → `XiaTan`
+- **Timer/线程池泄漏**：扩展卸载时 `dispose()` + `shutdown()` 清理
+- **V2.1.1 版本号残留**：全部更新至 v2.1.2
+- **isDifferentPage 重复代码**：统一到 AbstractInjectionStrategy 静态方法
+- **setSimThreshold 重复设置**：提到参数循环外层
+- **Checkbox 初始状态**：读取 scanEngine 实际值，重启后 UI 一致
+- **flushPendingLogs 积压**：移除 50 条上限，全部清空
+- **ProbeLogTableModel 行事件**：补 `fireTableRowsDeleted`
+- **429 限流误报**：`isDifferentPage` 新增状态码检查，429 直接跳过
+- **所有策略**：`isDifferentPage` 调用统一传入状态码
+
+### Documentation
+
+- 新增 `sql.md`：完整 SQL 注入检测流程、策略详解、防误报机制、场景案例分析
+
+- 新增 `MyCompareTest`、`ResponseComparerTest`、`StructuralSignatureTest` 单元测试
+
+---
+
 ## v2.1 (2026-06-12)
 
 ### Critical Fixes

@@ -29,6 +29,7 @@ public class ProbeLogTableModel extends AbstractTableModel {
 
     private final List<Entry> entries = new ArrayList<>();
     private int counter = 0;
+    private static final int MAX_LOG_ENTRIES = 5000;
 
     @Override public synchronized int getRowCount() { return entries.size(); }
     @Override public int getColumnCount() { return COLUMNS.length; }
@@ -62,7 +63,13 @@ public class ProbeLogTableModel extends AbstractTableModel {
         }
     }
 
-    public synchronized void add(Entry e) { int idx = entries.size(); entries.add(e); fireTableRowsInserted(idx, idx); }
+    public synchronized void add(Entry e) {
+        while (entries.size() >= MAX_LOG_ENTRIES) {
+            entries.remove(0);
+            fireTableRowsDeleted(0, 0);
+        }
+        int idx = entries.size(); entries.add(e); fireTableRowsInserted(idx, idx);
+    }
     public synchronized Entry getEntry(int row) { return (row >= 0 && row < entries.size()) ? entries.get(row) : null; }
     public synchronized void clear() { entries.clear(); counter = 0; fireTableDataChanged(); }
     public synchronized int nextId() { return ++counter; }

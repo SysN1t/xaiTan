@@ -1,6 +1,6 @@
 package burp.util;
 
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * WAF 绕过载荷变换器 — 对 payload 应用随机等价变换
@@ -9,12 +9,11 @@ import java.util.Random;
  */
 public class WafBypass {
 
-    private static final Random RNG = new Random();
 
     /** 对 payload 应用随机 WAF 绕过变换 (不改变 SQL 语义) */
     public static String apply(String payload) {
         if (payload == null || payload.isEmpty()) return payload;
-        switch (RNG.nextInt(3)) {
+        switch (ThreadLocalRandom.current().nextInt(3)) {
             case 0: return randomCase(payload);
             case 1: return commentSpace(payload);
             default: return newlineSpace(payload);
@@ -26,7 +25,7 @@ public class WafBypass {
         StringBuilder sb = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
-            if (Character.isLetter(c) && RNG.nextBoolean()) {
+            if (Character.isLetter(c) && ThreadLocalRandom.current().nextBoolean()) {
                 sb.append(Character.isUpperCase(c)
                         ? Character.toLowerCase(c)
                         : Character.toUpperCase(c));
@@ -46,7 +45,7 @@ public class WafBypass {
             if (c == '\'' && (i == 0 || s.charAt(i - 1) != '\\')) {
                 inString = !inString;
                 sb.append(c);
-            } else if (c == ' ' && !inString && RNG.nextBoolean()) {
+            } else if (c == ' ' && !inString && ThreadLocalRandom.current().nextBoolean()) {
                 sb.append("/**/");
             } else {
                 sb.append(c);
@@ -64,7 +63,7 @@ public class WafBypass {
             if (c == '\'' && (i == 0 || s.charAt(i - 1) != '\\')) {
                 inString = !inString;
                 sb.append(c);
-            } else if (c == ' ' && !inString && RNG.nextBoolean()) {
+            } else if (c == ' ' && !inString && ThreadLocalRandom.current().nextBoolean()) {
                 sb.append('\t');
             } else {
                 sb.append(c);
