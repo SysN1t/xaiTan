@@ -1,4 +1,4 @@
-# xia_tan v2.0 — BurpSuite Multi-Vulnerability Scanner
+# xia_tan v2.1 — BurpSuite Multi-Vulnerability Scanner
 
 > **A complete rewrite of xia_tan v1.0** | Author: **SysN3t** | Montoya API (BurpSuite ≥ 2023.12.1) | Incorporating SQLi detection strategies from [DetSql](https://github.com/saoshao/DetSql).
 
@@ -46,7 +46,7 @@
 3. **Large body segmentation** — >50KB: compare head 10KB + tail 5KB
 4. **Levenshtein fast fail** — bail early on extreme length/prefix divergence
 5. **REST path normalization** — `/user/123` → `/user/{int}`
-6. **Timeout + retry** — `CompletableFuture.get(20s)`, max 2 retries
+6. **Simple send** — synchronous `api.http().sendRequest()`, no retries (delay controlled by global `Delay(ms)`)
 
 ## Build
 
@@ -57,7 +57,7 @@ javac --release 8 -cp lib/montoya-api-2026.4.jar -d build/classes \
   src/main/java/burp/util/*.java \
   src/main/java/burp/injection/*.java
 
-jar cf build/libs/xia_tan-2.0.jar -C build/classes burp -C src/main/resources xia_tan.properties
+jar cf build/libs/xia_tan-2.1.jar -C build/classes burp -C src/main/resources xia_tan.properties
 ```
 
 ## License

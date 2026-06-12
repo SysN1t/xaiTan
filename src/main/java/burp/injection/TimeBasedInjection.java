@@ -17,29 +17,31 @@ public class TimeBasedInjection extends AbstractInjectionStrategy {
         {"' AND 1=(SELECT 1 FROM pg_sleep(5))-- -", "PostgreSQL"},
         {"' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -", "Oracle"},
     };
-    private String lastPayload = "";
-    private long timeThreshold = 4000;
+    private final ThreadLocal<String> lastPayload = ThreadLocal.withInitial(() -> "");
+    private volatile long timeThreshold = 4000;
 
     public TimeBasedInjection(MontoyaApi api){super(api);}
     @Override public String getName(){return"Time-Based";}
     @Override public String getVulnType(){return"timesql";}
-    @Override public String getPayload(){return lastPayload;}
+    @Override public String getPayload(){return lastPayload.get();}
 
     public void setTimeThreshold(long ms){ this.timeThreshold = ms; }
 
     @Override
     public HttpRequestResponse execute(HttpRequest origReq, HttpRequestResponse baseRR,
                                          HttpParameter param, String baseBody) {
+        // null-safe 基线值发送
+        String baseVal = param.value();
         long t0 = System.currentTimeMillis();
-        HttpRequestResponse baseProbe = send(modParam(origReq, param, param.value()));
+        HttpRequestResponse baseProbe = send(modParam(origReq, param, baseVal != null ? baseVal : ""));
         long baseTime = System.currentTimeMillis() - t0;
         if (baseProbe == null || baseProbe.response() == null
                 || baseProbe.response().bodyToString().isEmpty()) return null;
 
         for (String[] probe : PROBES) {
-            lastPayload = probe[0];
+            lastPayload.set(probe[0]);
             long t1 = System.currentTimeMillis();
-            HttpRequestResponse rr = send(append(origReq, param, lastPayload));
+            HttpRequestResponse rr = send(append(origReq, param, lastPayload.get()));
             if (rr == null) continue;
             long elapsed = System.currentTimeMillis() - t1;
 

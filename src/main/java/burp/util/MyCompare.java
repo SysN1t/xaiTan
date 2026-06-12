@@ -47,16 +47,17 @@ public class MyCompare {
         return levenshteinImpl(a, b, 0.0);
     }
 
-    /** Levenshtein + 剥离前后缀后比较 (pocA/pocB 可为 null 表示跳过) */
+    /** Levenshtein + 剥离前后缀 (pocA→短串, pocB→长串, 匹配DetSql语义) */
     public static double levenshteinStripped(String a, String b, String pocA, String pocB) {
-        String[] stripped = upgradeStr(
-                a.length() <= b.length() ? a : b,
-                a.length() <= b.length() ? b : a);
+        String shorter = a.length() <= b.length() ? a : b;
+        String longer  = a.length() <= b.length() ? b : a;
+        String[] stripped = upgradeStr(shorter, longer);
         if (stripped[0].isEmpty() && stripped[1].isEmpty()) return 1.0;
 
+        // pocA只作用于短串(通常是探针A的残留), pocB只作用于长串(探针B的残留)
         String s0 = stripped[0], s1 = stripped[1];
-        if (pocA != null && !pocA.isEmpty()) { s0 = s0.replaceAll(pocA, ""); s1 = s1.replaceAll(pocA, ""); }
-        if (pocB != null && !pocB.isEmpty()) { s0 = s0.replaceAll(pocB, ""); s1 = s1.replaceAll(pocB, ""); }
+        if (pocA != null && !pocA.isEmpty()) s0 = s0.replaceAll(pocA, "");
+        if (pocB != null && !pocB.isEmpty()) s1 = s1.replaceAll(pocB, "");
 
         if (s0.isEmpty() && s1.isEmpty()) return 1.0;
         if (s0.isEmpty() || s1.isEmpty()) return 0.0;
@@ -94,14 +95,14 @@ public class MyCompare {
         return set;
     }
 
-    /** 优势 3: 大响应分段比较 */
+    /** 优势 3: 大响应分段比较（避免头尾重叠） */
     private static double segmentedSim(String a, String b) {
         String aHead = a.substring(0, Math.min(HEAD_SIZE, a.length()));
-        String aTail = a.length() > HEAD_SIZE
-                ? a.substring(Math.max(0, a.length() - TAIL_SIZE)) : "";
+        int aTailStart = Math.max(HEAD_SIZE, a.length() - TAIL_SIZE);
+        String aTail = a.length() > HEAD_SIZE ? a.substring(aTailStart) : "";
         String bHead = b.substring(0, Math.min(HEAD_SIZE, b.length()));
-        String bTail = b.length() > HEAD_SIZE
-                ? b.substring(Math.max(0, b.length() - TAIL_SIZE)) : "";
+        int bTailStart = Math.max(HEAD_SIZE, b.length() - TAIL_SIZE);
+        String bTail = b.length() > HEAD_SIZE ? b.substring(bTailStart) : "";
 
         double headSim = jaccardLineSim(aHead, bHead);
         double tailSim = jaccardLineSim(aTail, bTail);
@@ -119,16 +120,25 @@ public class MyCompare {
         // 快速失败: 长度差过大
         if (Math.abs(lenA - lenB) > maxLen * (1 - threshold)) return 0.0;
 
-        // 快速失败: 前 100 字符差异超大
+        // 快速失败: 前 100 码点差异超大 (codePointAt 处理 Unicode 代理对)
         if (lenA > 100 && lenB > 100) {
-            int prefixDist = 0;
-            for (int i = 0; i < 100; i++) {
-                if (a.charAt(i) != b.charAt(i)) prefixDist++;
+            int prefixDist = 0, count = 0;
+            int ia = 0, ib = 0;
+            while (count < 100 && ia < lenA && ib < lenB) {
+                int ca = a.codePointAt(ia), cb = b.codePointAt(ib);
+                if (ca != cb) prefixDist++;
+                ia += Character.charCount(ca);
+                ib += Character.charCount(cb);
+                count++;
             }
             if (prefixDist > 50) return 0.0;
         }
 
-        // 完整 Levenshtein 计算
+        // 完整 Levenshtein 计算（上限 50K 字符防止 OOM）
+        final int MAX_LEV = 50_000;
+        if (lenA > MAX_LEV) lenA = MAX_LEV;
+        if (lenB > MAX_LEV) lenB = MAX_LEV;
+        maxLen = Math.max(lenA, lenB);
         int[][] dp = new int[lenA + 1][lenB + 1];
         for (int i = 0; i <= lenA; i++) dp[i][0] = i;
         for (int j = 0; j <= lenB; j++) dp[0][j] = j;

@@ -29,12 +29,18 @@ public class StructuralSignature {
      * @param paramNamesSorted 排序后的参数名列表
      */
     public static String signature(String method, String path, List<String> paramNamesSorted) {
-        String sigPath = normalize(path);
+        String sigPath = normalize(stripQuery(path));
         String sigParams = paramNamesSorted.stream()
                 .filter(n -> !NOISE.contains(n))
-                .sorted()
                 .collect(Collectors.joining(","));
         return method + "|" + sigPath + "|" + sigParams;
+    }
+
+    /** 剥离 query string（去重不关心参数值差异） */
+    private static String stripQuery(String path) {
+        if (path == null) return path;
+        int q = path.indexOf('?');
+        return q >= 0 ? path.substring(0, q) : path;
     }
 
     /** 规范化路径: 替换动态段为占位符 */

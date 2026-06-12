@@ -207,7 +207,7 @@ public class XiaTanPanel extends JPanel {
         row1.setBackground(BG_HEADER);
         row1.add(lbl("排除参数:"));
         JTextField tEx = tf("csrf,token,_t,timestamp", 14);
-        sync(tEx, v->scanEngine.excludeParams=v);
+        sync(tEx, v->{scanEngine.excludeParams=v; scanEngine.savePersistedConfig();});
         row1.add(tEx);
         row1.add(sep());
         row1.add(lbl("请求间隔:"));
@@ -426,6 +426,7 @@ public class XiaTanPanel extends JPanel {
         }
         sync.accept(sb.toString());
         updateFilterButtonText();
+        scanEngine.savePersistedConfig();
     }
 
     private void updateFilterButtonText() {

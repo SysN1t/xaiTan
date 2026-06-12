@@ -14,10 +14,11 @@ public class EncodingDetector {
     public static Result detect(String value) {
         if (value == null || value.isEmpty()) return new Result(Type.NONE, value);
 
-        // 1. Base64 检测：合法字符集 + 长度是4的倍数（含=填充）
-        if (value.matches("^[A-Za-z0-9+/]+=*$") && value.length() % 4 == 0) {
+        // 1. Base64 检测：≥12字符 + 4的倍数 + 解码后≥8字节（降低短随机串误判）
+        if (value.matches("^[A-Za-z0-9+/]+=*$") && value.length() >= 12 && value.length() % 4 == 0) {
             try {
                 byte[] decoded = Base64.getDecoder().decode(value);
+                if (decoded.length < 8) throw new IllegalArgumentException("too short");
                 String text = new String(decoded, "UTF-8");
                 if (text.matches("^[\\x20-\\x7E]+$")) {
                     return new Result(Type.BASE64, text);
@@ -35,8 +36,8 @@ public class EncodingDetector {
             } catch (Exception ignored) {}
         }
 
-        // 3. Hex 编码检测：偶数长度纯 hex
-        if (value.length() % 2 == 0 && value.matches("^[0-9A-Fa-f]+$")) {
+        // 3. Hex 编码检测：≥8字符 + 偶数长度纯 hex（降低短 hex 值误判）
+        if (value.length() >= 8 && value.length() % 2 == 0 && value.matches("^[0-9A-Fa-f]+$")) {
             try {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < value.length(); i += 2) {
@@ -57,11 +58,15 @@ public class EncodingDetector {
     public static String encodePayload(Type type, String originalValue, String payload) {
         String combined = originalValue + payload;
         switch (type) {
-            case BASE64: return Base64.getEncoder().encodeToString(combined.getBytes());
+            case BASE64: try { return Base64.getEncoder().encodeToString(combined.getBytes("UTF-8")); } catch (java.io.UnsupportedEncodingException e) { return combined; }
             case URL:    try { return java.net.URLEncoder.encode(combined, "UTF-8"); } catch (Exception e) { return combined; }
             case HEX: {
                 StringBuilder sb = new StringBuilder();
-                for (byte b : combined.getBytes()) sb.append(String.format("%02X", b));
+                try {
+                    for (byte b : combined.getBytes("UTF-8")) sb.append(String.format("%02X", b));
+                } catch (java.io.UnsupportedEncodingException e) {
+                    return combined; // fallback: return unencoded
+                }
                 return sb.toString();
             }
             default: return combined;

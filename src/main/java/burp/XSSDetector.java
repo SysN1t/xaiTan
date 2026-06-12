@@ -21,8 +21,19 @@ public class XSSDetector {
     public static List<String[]> analyze(String body) {
         List<String[]> f = new ArrayList<>();
         if (body.contains(HTML_PAYLOAD)) {
-            f.add(new String[]{"Reflected (Unencoded)",
-                    "HTML tag <" + MARKER + "> reflected without encoding", "High"});
+            // 检查上下文：在 script/style/textarea/comment 中不可执行
+            int idx = body.indexOf(HTML_PAYLOAD);
+            String before = body.substring(0, idx).toLowerCase();
+            String after  = body.substring(idx).toLowerCase();
+            boolean inNonExec = before.lastIndexOf("<script") > before.lastIndexOf("</script>")
+                    || before.lastIndexOf("<textarea") > before.lastIndexOf("</textarea>")
+                    || before.lastIndexOf("<style") > before.lastIndexOf("</style>")
+                    || before.lastIndexOf("<!--") > before.lastIndexOf("-->");
+            String sev = inNonExec ? "Info" : "High";
+            String detail = inNonExec
+                    ? "HTML tag <" + MARKER + "> reflected in non-executable context (script/style/textarea/comment)"
+                    : "HTML tag <" + MARKER + "> reflected without encoding";
+            f.add(new String[]{"Reflected (Unencoded)", detail, sev});
         } else if (body.contains(MARKER)) {
             // 仅在 HTML 上下文中出现才报 Info（排除纯文本错误页面的巧合匹配）
             if (body.contains("&lt;" + MARKER + "&gt;")

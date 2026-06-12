@@ -13,6 +13,9 @@ public abstract class AbstractInjectionStrategy {
     // Cookie 编码上下文 — ThreadLocal 避免多线程竞争
     private final ThreadLocal<EncodingDetector.Type> cookieEncoding =
             ThreadLocal.withInitial(() -> EncodingDetector.Type.NONE);
+    // 相似度阈值 — ThreadLocal 支持并发扫描各自使用不同阈值
+    private final ThreadLocal<Double> simThreshold =
+            ThreadLocal.withInitial(() -> 0.9);
 
     protected AbstractInjectionStrategy(MontoyaApi api) { this.api = api; }
 
@@ -22,6 +25,12 @@ public abstract class AbstractInjectionStrategy {
 
     /** 设置 Cookie 编码类型（调用 execute 前由 ScanEngine 设置，结束后清除） */
     public void setCookieEncoding(EncodingDetector.Type type) { cookieEncoding.set(type); }
+
+    /** 设置相似度阈值（调用 execute 前由 ScanEngine 设置） */
+    public void setSimThreshold(double t) { simThreshold.set(t); }
+
+    /** 获取当前线程的相似度阈值 */
+    protected double sim() { return simThreshold.get(); }
 
     public abstract HttpRequestResponse execute(HttpRequest origReq, HttpRequestResponse baseRR,
                                                   HttpParameter param, String baseBody);
@@ -43,6 +52,7 @@ public abstract class AbstractInjectionStrategy {
     }
 
     protected HttpRequest append(HttpRequest orig, HttpParameter param, String payload) {
-        return modParam(orig, param, param.value() + payload);
+        String base = param.value();
+        return modParam(orig, param, (base != null ? base : "") + payload);
     }
 }

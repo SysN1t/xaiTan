@@ -4,7 +4,7 @@
 
 通过修改请求参数对常见 Web 漏洞进行**自动化初步探测**的 BurpSuite 扩展插件。支持反射 XSS、SQL 注入（6 种检测策略）、SSTI 模板注入（6 大家族 20+ 引擎）、NoSQL 注入。
 
-> **v2.0 重大更新**：迁移至 Montoya API（BurpSuite ≥ 2023.12.1），借鉴 [DetSql](https://github.com/saoshao/DetSql) 的 SQLi 检测优势，新增策略模式、统一相似度引擎、REST API 路径去重。
+> **v2.1 稳定版**：迁移至 Montoya API（BurpSuite ≥ 2023.12.1），借鉴 [DetSql](https://github.com/saoshao/DetSql) 的 SQLi 检测优势，新增策略模式、统一相似度引擎、REST API 路径去重。v2.1 修复 19 项缺陷（含 3 个 Critical 漏报/误报问题）。
 
 ---
 
@@ -118,8 +118,8 @@
 /session/a1b2c3d4 → /session/{hex}
 ```
 
-#### ⑥ 请求超时与重试
-`CompletableFuture.get(20, SECONDS)` 超时控制 + 最多 2 次重试，防止线程池被挂起的请求永久占用。
+#### ⑥ 单请求发送
+简单同步发送 (`api.http().sendRequest()`)，无重试机制（避免目标压力累积）。延时控制由全局 `Delay(ms)` 参数统一管理。
 
 ### 布尔盲注多步对照算法（借鉴 DetSql）
 
@@ -262,7 +262,7 @@ javac --release 8 -cp lib/montoya-api-2026.4.jar \
   src/main/java/burp/injection/*.java
 
 # 打包 JAR
-jar cf build/libs/xia_tan-2.0.jar -C build/classes burp
+jar cf build/libs/xia_tan-2.1.jar -C build/classes burp -C src/main/resources xia_tan.properties
 ```
 
 产物路径：`build/libs/xia_tan-2.0.jar`
@@ -272,7 +272,7 @@ jar cf build/libs/xia_tan-2.0.jar -C build/classes burp
 1. 打开 BurpSuite（需 ≥ 2023.12.1 版本）
 2. 进入 **Extensions** → **Installed** → **Add**
 3. Extension type 选择 **Java**
-4. 选择编译好的 `xia_tan-2.0.jar`
+4. 选择编译好的 `xia_tan-2.1.jar`
 5. 加载成功后会出现 `xia_tan` 标签页
 
 ---
@@ -342,7 +342,7 @@ xia_tan/
 ├── lib/                                   # 编译依赖
 │   └── montoya-api-2026.4.jar             # Burp Montoya API
 ├── build/libs/                            # 编译产物
-│   └── xia_tan-2.0.jar
+│   └── xia_tan-2.1.jar
 └── src/main/java/burp/
     ├── xia_tan.java                       # 插件入口 (BurpExtension + HttpHandler + 右键菜单)
     ├── ScanEngine.java                    # 核心扫描引擎 + 过滤 + 日志记录
@@ -358,7 +358,7 @@ xia_tan/
     │   ├── MyCompare.java                 # 统一相似度引擎（Jaccard + Levenshtein + upgradeStr）
     │   └── StructuralSignature.java       # REST API 路径去重（动态段 → 占位符）
     └── injection/
-        ├── AbstractInjectionStrategy.java # 注入策略抽象基类（超时控制 + 请求重试）
+        ├── AbstractInjectionStrategy.java # 注入策略抽象基类（ThreadLocal Cookie 编码上下文）
         ├── ErrorBasedInjection.java       # 报错注入（10 种数据库）
         ├── BooleanBlindInjection.java     # 布尔盲注（EXP 对照算法）
         ├── StringInjection.java           # 字符型注入（四步阶梯验证）
@@ -383,6 +383,28 @@ xia_tan/
 ---
 
 ## 更新日志
+
+### v2.1
+
+**关键缺陷修复 (C1-C3)**:
+- **C1 ErrorBasedInjection 基线比较精度**: `detectError()` 改为返回具体匹配的**正则模式**而非数据库类型名，避免同数据库不同错误被错误跳过（如基线有 MySQL "Unknown column"，探针触发 MySQL "XPATH syntax error" 时不会被漏报）
+- **C2 simThreshold 对 SQLi 策略生效**: 新增 `AbstractInjectionStrategy.setSimThreshold()` (ThreadLocal)，`ScanEngine` 在策略链执行前注入用户配置的相似度阈值；此前所有 6 个 SQLi 策略硬编码 0.9，修改 UI "Sim" 参数无效
+- **C3 lastPayload 线程安全**: 6 个策略类的 `lastPayload` 字段改为 `ThreadLocal<String>`，消除并发扫描时的数据竞争（此前多个参数并发探测时 `getPayload()` 可能返回其他线程的 payload）
+
+**高危修复 (H1-H4)**:
+- **H1 hashRequestBody**: 异常时返回随机 UUID 而非空字符串 `""`，防止空串碰撞导致去重静默失效
+- **H2 Base64 编码**: `encodePayload(BASE64)` 改用 `combined.getBytes("UTF-8")`，与解码端一致
+- **H3/H4 空值防护**: `probeXSS_SSTI` 和 XSS Phase 2 中 `param.value()+payload` 添加 null 防护；`TimeBasedInjection.execute()` 添加 `param.value()` null 防护
+- **M6 FileReader 泄漏**: `loadPersistedConfig` 改用 try-with-resources 关闭 FileReader
+
+**中等修复 (M1-M7)**:
+- **M1 OrderByInjection**: 移除未使用的 `NAMES` 集合、`isOrderParam()` 方法和 `import java.util.*`
+- **M2 StructuralSignature**: 路径归一化前剥离 query string（`?` 之后），使 `/api/user?id=1` 与 `/api/user?id=2` 可被正确去重
+- **M3 StructuralSignature**: 移除 `signature()` 内部冗余的 `.sorted()`（调用方已排序）
+- **M4 segmentedSim**: 修复大响应分段比较的头尾重叠问题（12KB 响应时尾段起始改用 `Math.max(HEAD_SIZE, len-TAIL_SIZE)`）
+- **L1 Hex 检测**: 新增最小长度 ≥8 字符限制，降低短 hex 值误判
+- **L2 Levenshtein DP**: 添加 50K 字符上限防止极端输入 OOM
+- **TimeBasedInjection**: `timeThreshold` 字段添加 `volatile` 修饰符
 
 ### v2.0 (2026-06)
 

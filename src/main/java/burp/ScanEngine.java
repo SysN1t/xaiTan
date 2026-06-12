@@ -14,6 +14,9 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.UUID;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
 
 public class ScanEngine {
 
@@ -64,6 +67,8 @@ public class ScanEngine {
     public ScanEngine(MontoyaApi api) {
         this.api = api;
         this.executor = Executors.newFixedThreadPool(10);
+        // 从持久化存储加载用户配置（首次启动用 properties 文件默认值）
+        loadPersistedConfig();
         this.sqliStrategies = Arrays.asList(
             new ErrorBasedInjection(api),
             new BooleanBlindInjection(api),
@@ -81,6 +86,44 @@ public class ScanEngine {
 
     public void cancelScan(String scanId) { Future<?> f = activeScans.remove(scanId); if (f != null) f.cancel(true); }
     public void cancelAllScans() { for (Future<?> f : activeScans.values()) f.cancel(true); activeScans.clear(); }
+
+    // ==================== 持久化配置 ====================
+
+    private static File configFile() {
+        return new File(System.getProperty("user.home"), ".xia_tan/config.properties");
+    }
+
+    private void loadPersistedConfig() {
+        File f = configFile();
+        if (!f.exists()) return;
+        try {
+            java.util.Properties p = new java.util.Properties();
+            try (java.io.FileReader reader = new java.io.FileReader(f)) {
+                p.load(reader);
+            }
+            domainBlacklist = p.getProperty("domain.blacklist", domainBlacklist);
+            pathBlacklist   = p.getProperty("path.blacklist", pathBlacklist);
+            excludeParams   = p.getProperty("exclude.params", excludeParams);
+            timeThreshold   = Long.parseLong(p.getProperty("time.threshold", String.valueOf(timeThreshold)));
+            simThreshold    = Double.parseDouble(p.getProperty("sim.threshold", String.valueOf(simThreshold)));
+        } catch (Exception ignored) {}
+    }
+
+    public void savePersistedConfig() {
+        File f = configFile();
+        try {
+            f.getParentFile().mkdirs();
+            java.util.Properties p = new java.util.Properties();
+            p.setProperty("domain.blacklist", nvl(domainBlacklist));
+            p.setProperty("path.blacklist", nvl(pathBlacklist));
+            p.setProperty("exclude.params", nvl(excludeParams));
+            p.setProperty("time.threshold", String.valueOf(timeThreshold));
+            p.setProperty("sim.threshold", String.valueOf(simThreshold));
+            p.store(new java.io.FileWriter(f), "xia_tan v2.1 user config");
+        } catch (Exception ignored) {}
+    }
+
+    private static String nvl(String s) { return s != null ? s : ""; }
 
     static class ScanConfig {
         boolean xss, sqli, ssti, nosqli, timeSqli, cookie, scanAdd, scanDel, scanMod;
@@ -206,20 +249,39 @@ public class ScanEngine {
             String origValue = req.headerValue(headerName);
             if (origValue == null || origValue.isEmpty()) continue;
 
-            // 用简单单引号探针测试
-            delay(cfg);
-            HttpRequest modReq = req.withHeader(headerName, origValue + "'");
-            HttpRequestResponse rr = sendProbe(modReq, path, headerName, "'");
-            if (rr == null || rr.response() == null) continue;
+            // 用原始值重置（避免上次探测残留累积）
+            String cleanValue = origValue.replaceAll("['\"\\\\]+$", "");
 
-            String body = rr.response().bodyToString();
-            double sim = MyCompare.similarity(baseBody, body);
-            if (sim < cfg.simThresh) {
-                String err = ErrorBasedInjection.detectError(body);
+            // 发送探针 1: 单引号
+            delay(cfg);
+            HttpRequest modReq1 = req.withHeader(headerName, cleanValue + "'");
+            HttpRequestResponse rr1 = sendProbe(modReq1, path, headerName, "'");
+            if (rr1 == null || rr1.response() == null) continue;
+            String body1 = rr1.response().bodyToString();
+
+            // 发送探针 2: 双引号（正交验证，排除随机波动）
+            delay(cfg);
+            HttpRequest modReq2 = req.withHeader(headerName, cleanValue + "\"");
+            HttpRequestResponse rr2 = sendProbe(modReq2, path, headerName, "\"");
+            if (rr2 == null || rr2.response() == null) continue;
+            String body2 = rr2.response().bodyToString();
+
+            // 两个探针都产生差异才确认（排除单次网络波动）
+            // 小响应体 (<500B) 用 Levenshtein 替代 Jaccard
+            boolean smallBody = baseBody.length() < 500;
+            double sim1 = smallBody ? MyCompare.levenshtein(baseBody, body1)
+                                    : MyCompare.similarity(baseBody, body1);
+            double sim2 = smallBody ? MyCompare.levenshtein(baseBody, body2)
+                                    : MyCompare.similarity(baseBody, body2);
+            double threshold = smallBody ? 0.85 : cfg.simThresh;
+
+            if (sim1 < threshold && sim2 < threshold) {
+                String err = ErrorBasedInjection.detectError(body1);
                 String sev = (err != null && (baselineSqlErr == null || !baselineSqlErr.equals(err)))
                         ? "High" : "Medium";
                 report(host, method, path, headerName, "SQLi",
-                        "Header Injection", "Header '" + headerName + "' sim=" + MyCompare.fmt(sim), sev, rr);
+                        "Header Injection", "Header '" + headerName
+                                + "' sim1=" + MyCompare.fmt(sim1) + " sim2=" + MyCompare.fmt(sim2), sev, rr1);
             }
         }
     }
@@ -239,8 +301,9 @@ public class ScanEngine {
         String payload = sb.toString();
 
         delay(cfg);
+        String pv = param.value();
         HttpRequest modReq = req.withParameter(
-                HttpParameter.parameter(param.name(), param.value()+payload, param.type()));
+                HttpParameter.parameter(param.name(), (pv != null ? pv : "") + payload, param.type()));
         HttpRequestResponse rr = sendProbe(modReq, path, param.name(), payload);
 
         if (rr==null || rr.response()==null) return;
@@ -404,7 +467,7 @@ public class ScanEngine {
             StringBuilder sb = new StringBuilder();
             for (byte b : hash) sb.append(String.format("%02x", b));
             return sb.toString().substring(0, 16);
-        } catch (Exception e) { return ""; }
+        } catch (Exception e) { return UUID.randomUUID().toString(); }
     }
 
     /** 提取 Cookie 参数（仅当 Cookie 开关打开时调用） */
@@ -463,8 +526,9 @@ public class ScanEngine {
             if (cfg.xss && respCt != null && !respCt.contains("json")) {
                 for (String[] probe : XSSDetector.ADVANCED_PROBES) {
                     delay(cfg);
+                    String pv2 = param.value();
                     HttpRequest modReq = req.withParameter(
-                            HttpParameter.parameter(param.name(), param.value() + probe[0], param.type()));
+                            HttpParameter.parameter(param.name(), (pv2 != null ? pv2 : "") + probe[0], param.type()));
                     HttpRequestResponse rr = sendProbe(modReq, path, param.name(), probe[0]);
                     if (rr == null || rr.response() == null) continue;
                     String body = rr.response().bodyToString();
@@ -480,6 +544,7 @@ public class ScanEngine {
             // SQLi 策略链：链内命中即停（避免同类型重复探测）
             if (cfg.sqli) {
                 for (AbstractInjectionStrategy strat : sqliStrategies) {
+                    strat.setSimThreshold(cfg.simThresh);
                     delay(cfg);
                     HttpRequestResponse probeRR = strat.execute(req, baseRR, param, baseBody);
                     if (probeRR != null) {
