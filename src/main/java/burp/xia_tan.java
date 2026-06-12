@@ -23,7 +23,7 @@ public class xia_tan implements BurpExtension, HttpHandler, ContextMenuItemsProv
     @Override
     public void initialize(MontoyaApi api) {
         this.api = api;
-        api.extension().setName("xia_tan v2.1 (Montoya)");
+        api.extension().setName("xia_tan v2.1.1 (Montoya)");
 
         scanEngine = new ScanEngine(api);
 
@@ -36,7 +36,7 @@ public class xia_tan implements BurpExtension, HttpHandler, ContextMenuItemsProv
         api.userInterface().registerContextMenuItemsProvider(this);
 
         api.logging().logToOutput("==============================================");
-        api.logging().logToOutput("  xia_tan v2.1 loaded! (Montoya API)");
+        api.logging().logToOutput("  xia_tan v2.1.1 loaded! (Montoya API)");
         api.logging().logToOutput("  Author: SysN3t");
         api.logging().logToOutput("  Probe: XSS / SQLi / SSTI / NoSQLi");
         api.logging().logToOutput("  Right-click -> Send to xia_tan");

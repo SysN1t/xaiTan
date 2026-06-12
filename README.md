@@ -1,10 +1,10 @@
-# xia_tan (瞎探) v2.0 — BurpSuite 多漏洞自动化探测插件
+# xia_tan (瞎探) v2.1.1 — BurpSuite 多漏洞自动化探测插件
 
-> **基于 xia_tan v1.0 二次开发** | Author: **SysN3t** | 迁移至 Montoya API，借鉴 [DetSql](https://github.com/saoshao/DetSql) 的 SQLi 检测优势重构。
+> **基于 xia_tan v1.0 二次开发** | Author: **SysN3t** | Montoya API (BurpSuite ≥ 2023.12.1) | WAF 绕过 · 最少 payload · 基础探测
 
-通过修改请求参数对常见 Web 漏洞进行**自动化初步探测**的 BurpSuite 扩展插件。支持反射 XSS、SQL 注入（6 种检测策略）、SSTI 模板注入（6 大家族 20+ 引擎）、NoSQL 注入。
+通过修改请求参数对常见 Web 漏洞进行**自动化初步探测**的 BurpSuite 扩展插件。支持反射 XSS、SQL 注入（4 种策略链）、SSTI 模板注入（6 大家族 20+ 引擎）、NoSQL 注入。
 
-> **v2.1 稳定版**：迁移至 Montoya API（BurpSuite ≥ 2023.12.1），借鉴 [DetSql](https://github.com/saoshao/DetSql) 的 SQLi 检测优势，新增策略模式、统一相似度引擎、REST API 路径去重。v2.1 修复 19 项缺陷（含 3 个 Critical 漏报/误报问题）。
+> **v2.1.1**：Montoya API（BurpSuite ≥ 2023.12.1）。WAF 绕过、最少 payload 策略链、体量误报过滤、线程安全。
 
 ---
 
@@ -36,14 +36,13 @@
 
 借鉴 DetSql 的策略模式，每种策略独立执行、命中即停。
 
-| 策略 | 类型 | 检测方式 |
-|------|------|---------|
-| ErrorBased | 报错注入 | `'`, `"`, `\` 触发语法错误，正则匹配 10 种数据库 91+ 特征 |
-| BooleanBlind | 布尔盲注 | `'\|\|EXP(710)\|\|'` / `'\|\|EXP(290)\|\|'` / `'\|\|1/1\|\|'` 三步对照 |
-| StringInjection | 字符型注入 | `'` → `''` → `'+'` → `'\|\|'` 四步阶梯验证 |
-| NumericInjection | 数字型注入 | `-0-0-0`（等价变换）→ `-abc`（语法破坏）对比验证 |
-| OrderByInjection | ORDER BY 注入 | `,0` → `,xxxxxx` → `,1` / `,2` 阶梯验证 |
-| TimeBasedInjection | 延时注入 | SLEEP / WAITFOR 轮询 + 基线耗时 2x 判定 |
+| 策略 | 类型 | 检测方式 | 请求数 |
+|------|------|---------|--------|
+| ErrorBased | 报错注入 | `'` `"` `\` 触发语法错误，匹配 10 种数据库 91+ 特征 | 3 |
+| UnifiedString | 字符串/布尔盲注 | 复用`'`→`''`修复→`1=1`/`1=2`布尔（依次 `'` `')` `'))` `"` 前缀）→`'||'||'` 降级 | 0~8 |
+| NumericInjection | 数字型注入 | 追加: `-0-0-0`→`-abc` \| 替换: `1/0`→`1/1` 双阶段独立 | 2~4 |
+| OrderByInjection | ORDER BY 注入 | `,0` → `,xxxxxx` → `,1` 阶梯验证 | 3 |
+| TimeBasedInjection | 延时注入 | SLEEP/WAITFOR/pg_sleep/DBMS_PIPE（`'` `"` `')` `")` 各 4 种） | 1~16 |
 
 **支持的数据库（10 种）**：MySQL / MariaDB, MSSQL, PostgreSQL, Oracle, SQLite, DB2, Informix, Sybase, MS Access, HQL / Hibernate
 
@@ -150,21 +149,22 @@
 
 Phase 1: XSS + SSTI 合并探测 ........................ 1 request
   └─ 一个 payload 同时测试 HTML 反射 + 6 种模板语法
-  └─ JSON 响应自动跳过 XSS 检测
 
-Phase 2: SQLi 策略链 ............................... 2~12 requests
-  ├─ ErrorBased:    报错探针 (', ", \, '"\\) → 匹配10种数据库错误
-  ├─ BooleanBlind:  EXP(710) / EXP(290) / 1/1 布尔对照
-  ├─ String:        ', '', '+', '||' 四步验证
-  ├─ Numeric:       -0-0-0 / -abc 对比验证（仅数字参数）
-  ├─ OrderBy:       ,0 / ,xxxxxx / ,1 / ,2 阶梯验证（仅排序参数）
-  └─ TimeBased:     SLEEP / WAITFOR 延时检测（可由 Time 开关控制）
-  → 任一策略命中即停止本参数探测
+Phase 2: XSS 高级探针 ............................. 0~3 requests
+  └─ 仅 Phase1 有反射时执行（事件/属性/JS 注入）
 
-Phase 3: NoSQLi 操作符注入 ......................... 1~5 requests
+Phase 3: SQLi 策略链 ............................... 3~8 requests
+  ├─ ErrorBased:     ', ", \ → 匹配10种数据库错误
+  ├─ UnifiedString:  复用 ' → '' 修复 → 1=1/1=2 布尔 → '||'||' 降级
+  ├─ Numeric:       -0-0-0 / -abc（仅数字参数）
+  ├─ OrderBy:       ,0 / ,xxxxxx / ,1（仅排序参数）
+  └─ TimeBased:     SLEEP/WAITFOR 延时（可关闭）
+  → 任一策略命中即停止
+
+Phase 4: NoSQLi 操作符注入 ......................... 1~5 requests
   └─ $gt / $ne / $regex / $exists / $where（仅 JSON 请求体）
 
-总计: 每个参数约 3~15 个请求（绝大多数情况 5~8 个）
+总计: 每个参数约 3~10 个请求（无注入最坏 6 个）
 ```
 
 ---
@@ -262,17 +262,17 @@ javac --release 8 -cp lib/montoya-api-2026.4.jar \
   src/main/java/burp/injection/*.java
 
 # 打包 JAR
-jar cf build/libs/xia_tan-2.1.jar -C build/classes burp -C src/main/resources xia_tan.properties
+jar cf build/libs/xia_tan-2.1.1.jar -C build/classes burp -C src/main/resources xia_tan.properties
 ```
 
-产物路径：`build/libs/xia_tan-2.0.jar`
+产物路径：`build/libs/xia_tan-2.1.1.jar`
 
 ### 安装
 
 1. 打开 BurpSuite（需 ≥ 2023.12.1 版本）
 2. 进入 **Extensions** → **Installed** → **Add**
 3. Extension type 选择 **Java**
-4. 选择编译好的 `xia_tan-2.1.jar`
+4. 选择编译好的 `xia_tan-2.1.1.jar`
 5. 加载成功后会出现 `xia_tan` 标签页
 
 ---
@@ -356,15 +356,15 @@ xia_tan/
     ├── ResponseComparer.java              # 域名 / 路径匹配
     ├── util/
     │   ├── MyCompare.java                 # 统一相似度引擎（Jaccard + Levenshtein + upgradeStr）
+    │   ├── WafBypass.java                 # WAF 绕过载荷变换器
     │   └── StructuralSignature.java       # REST API 路径去重（动态段 → 占位符）
     └── injection/
-        ├── AbstractInjectionStrategy.java # 注入策略抽象基类（ThreadLocal Cookie 编码上下文）
-        ├── ErrorBasedInjection.java       # 报错注入（10 种数据库）
-        ├── BooleanBlindInjection.java     # 布尔盲注（EXP 对照算法）
-        ├── StringInjection.java           # 字符型注入（四步阶梯验证）
+        ├── AbstractInjectionStrategy.java # 注入策略抽象基类（ThreadLocal）
+        ├── ErrorBasedInjection.java       # 报错注入（10 种数据库, 基础探针）
+        ├── UnifiedStringInjection.java    # 统一字符串/布尔盲注（合并原 String+Boolean）
         ├── NumericInjection.java          # 数字型注入（等价变换对比）
         ├── OrderByInjection.java          # ORDER BY 注入（阶梯验证）
-        └── TimeBasedInjection.java        # 延时注入（SLEEP / WAITFOR 轮询）
+        └── TimeBasedInjection.java        # 延时注入（SLEEP/WAITFOR 轮询）
 ```
 
 ---
@@ -384,27 +384,52 @@ xia_tan/
 
 ## 更新日志
 
-### v2.1
+### v2.1.1 (当前版本)
 
-**关键缺陷修复 (C1-C3)**:
-- **C1 ErrorBasedInjection 基线比较精度**: `detectError()` 改为返回具体匹配的**正则模式**而非数据库类型名，避免同数据库不同错误被错误跳过（如基线有 MySQL "Unknown column"，探针触发 MySQL "XPATH syntax error" 时不会被漏报）
-- **C2 simThreshold 对 SQLi 策略生效**: 新增 `AbstractInjectionStrategy.setSimThreshold()` (ThreadLocal)，`ScanEngine` 在策略链执行前注入用户配置的相似度阈值；此前所有 6 个 SQLi 策略硬编码 0.9，修改 UI "Sim" 参数无效
-- **C3 lastPayload 线程安全**: 6 个策略类的 `lastPayload` 字段改为 `ThreadLocal<String>`，消除并发扫描时的数据竞争（此前多个参数并发探测时 `getPayload()` 可能返回其他线程的 payload）
+**策略优化**:
+- **合并 StringInjection + BooleanBlind** → `UnifiedStringInjection`，复用 ErrorBased 的 `'` 探针，省 5 请求
+- **ErrorBased**: 6 基础探针 (`'` `"` `\` `')` `'))` `")`) + 4 可选增强 (`extendedProbes`)；移除 XPATH 数据提取阶段
+- **NumericInjection**: 两步确认 (`-0-0-0` → `-abc`)
+- **OrderByInjection**: 入口预检 `looksLikeOrderValue` + `,0`→`,xxxxxx`→`,1`
+- **无注入最坏 9 请求/参数**，报错命中最快 1 请求
 
-**高危修复 (H1-H4)**:
-- **H1 hashRequestBody**: 异常时返回随机 UUID 而非空字符串 `""`，防止空串碰撞导致去重静默失效
-- **H2 Base64 编码**: `encodePayload(BASE64)` 改用 `combined.getBytes("UTF-8")`，与解码端一致
-- **H3/H4 空值防护**: `probeXSS_SSTI` 和 XSS Phase 2 中 `param.value()+payload` 添加 null 防护；`TimeBasedInjection.execute()` 添加 `param.value()` null 防护
-- **M6 FileReader 泄漏**: `loadPersistedConfig` 改用 try-with-resources 关闭 FileReader
+**WAF 绕过**:
+- `WafBypass` 载荷变换器：大小写随机 / `/**/` 注释填空格 / `\t` Tab 代空格，各 25% 随机轮换
+- UI「WAF 绕过」复选框，默认开启，实时生效
 
-**中等修复 (M1-M7)**:
-- **M1 OrderByInjection**: 移除未使用的 `NAMES` 集合、`isOrderParam()` 方法和 `import java.util.*`
-- **M2 StructuralSignature**: 路径归一化前剥离 query string（`?` 之后），使 `/api/user?id=1` 与 `/api/user?id=2` 可被正确去重
-- **M3 StructuralSignature**: 移除 `signature()` 内部冗余的 `.sorted()`（调用方已排序）
-- **M4 segmentedSim**: 修复大响应分段比较的头尾重叠问题（12KB 响应时尾段起始改用 `Math.max(HEAD_SIZE, len-TAIL_SIZE)`）
-- **L1 Hex 检测**: 新增最小长度 ≥8 字符限制，降低短 hex 值误判
-- **L2 Levenshtein DP**: 添加 50K 字符上限防止极端输入 OOM
-- **TimeBasedInjection**: `timeThreshold` 字段添加 `volatile` 修饰符
+**误报过滤**:
+- `isDifferentPage()` 体量异常（ratio <10%/>10x + 绝对体积 + 空body）
+- Header 注入 `isHeaderProbeDiffPage` 体量过滤
+- `levenshteinStripped` pocA→参数a, pocB→参数b 语义修正
+- `detectError()` 返回正则模式，基线比较精度提升
+
+**URL/Body 编码**:
+- 空格自动编码为 `%20`（URL + POST Body），Cookie 不编码
+
+**线程安全**:
+- 全部 `lastPayload` → `ThreadLocal<String>`
+- `sharedSingleQuoteProbe` → `static ThreadLocal`
+- `simThreshold` / `wafBypass` / `cookieEncoding` → ThreadLocal
+
+**UI 改进**:
+- Results/Logs 默认 ID 降序（最新在上）+ `setSortsOnUpdates(false)` 防跳行
+- 排除参数/阈值字段初始值从持久化文件加载（不再被硬编码覆盖）
+- 配置保存 1 秒防抖
+
+**编码/去重/过滤**:
+- `encodePayload` Base64/Hex 统一 UTF-8；Hex ≥8 字符
+- `isStatic`/`matchPath`/`matches`/`StructuralSignature` 统一剥离 query string
+- 编码检测限 Cookie 参数
+- CUD 过滤 + 路径黑名单 query string 修复
+
+**健壮性**:
+- doScan/NoSQLi/XSS Phase2 参数 null 防护
+- `hashRequestBody` 异常返回 UUID
+- `loadPersistedConfig` try-resource + 异常日志
+- `buildOperatorPayload` `(?<!\w)` 词边界 + `Any` 值类型覆盖
+- `copySelected` view→model 行转换
+- `scanAsync(rr,cfg)` 注册 activeScans
+- `simThreshold` 对全部 SQLi 策略生效
 
 ### v2.0 (2026-06)
 

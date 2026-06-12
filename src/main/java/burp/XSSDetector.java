@@ -37,7 +37,6 @@ public class XSSDetector {
         } else if (body.contains(MARKER)) {
             // 仅在 HTML 上下文中出现才报 Info（排除纯文本错误页面的巧合匹配）
             if (body.contains("&lt;" + MARKER + "&gt;")
-                    || body.contains("&lt;xia0tan&gt;")
                     || body.contains("value=\"" + MARKER + "\"")
                     || body.contains(">" + MARKER + "<")) {
                 f.add(new String[]{"Reflected (Encoded)",

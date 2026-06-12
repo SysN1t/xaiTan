@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.xiatan'
-version = '1.0'
+version = '2.1.1'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
@@ -14,13 +14,6 @@ repositories {
     mavenCentral()
 }
 
-dependencies {
-    compileOnly 'net.portswigger.burp.extender:burp-extender-api:1.7.22'
-}
-
 jar {
     archivesBaseName = 'xia_tan'
-    from {
-        configurations.compileClasspath.collect { it.isDirectory() ? it : zipTree(it) }
-    }
 }

@@ -76,6 +76,6 @@ public class EncodingDetector {
     public static class Result {
         public final Type type;
         public final String decoded;
-        Result(Type t, String d) { this.type = t; this.decoded = d; }
+        public Result(Type t, String d) { this.type = t; this.decoded = d; }
     }
 }

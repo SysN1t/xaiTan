@@ -74,6 +74,9 @@ public class ResponseComparer {
     }
 
     private static boolean matchPath(String path, String pattern) {
+        // 剥离 query string，避免 /style.css?v=1 无法匹配 *.css
+        int qm = path.indexOf('?');
+        if (qm >= 0) path = path.substring(0, qm);
         // 规范化：去掉尾斜杠，避免 /api/ ≠ /api 的误判
         if (path.endsWith("/")) path = path.substring(0, path.length() - 1);
         if (pattern.endsWith("/")) pattern = pattern.substring(0, pattern.length() - 1);

@@ -31,12 +31,19 @@ public class NoSQLiDetector {
     }
 
     public static String buildOperatorPayload(String json, String param, String op) {
-        String pat = "\"" + esc(param) + "\"\\s*:\\s*\"[^\"]*\"";
+        // (?<!\\w) 确保 param 是完整键名，避免 "id" 误匹配 "user_id"
+        String pat = "(?<!\\w)\"" + esc(param) + "\"\\s*:\\s*\"[^\"]*\"";
         return json.replaceFirst(pat, "\"" + param + "\":" + op);
     }
 
     public static String buildOperatorPayloadNumeric(String json, String param, String op) {
-        String pat = "\"" + esc(param) + "\"\\s*:\\s*-?\\d+(\\.\\d+)?";
+        String pat = "(?<!\\w)\"" + esc(param) + "\"\\s*:\\s*-?\\d+(\\.\\d+)?";
+        return json.replaceFirst(pat, "\"" + param + "\":" + op);
+    }
+
+    /** 匹配任何 JSON 值类型 (null/boolean/array/object)，覆盖前两个方法未处理的场景 */
+    public static String buildOperatorPayloadAny(String json, String param, String op) {
+        String pat = "(?<!\\w)\"" + esc(param) + "\"\\s*:\\s*[^,}\\]]+";
         return json.replaceFirst(pat, "\"" + param + "\":" + op);
     }
 

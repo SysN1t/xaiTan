@@ -17,6 +17,11 @@ All notable changes to xia_tan.
 - **C3 lastPayload thread safety** (all 6 strategy classes)
   Changed `lastPayload` from instance field to `ThreadLocal<String>`. Previously, concurrent parameter scans could race on this field, causing `getPayload()` to return another thread's payload — leading to incorrect evidence in scan reports.
 
+### False Positive Elimination
+
+- **Body size ratio filter** (`AbstractInjectionStrategy.isDifferentPage()`, all 6 strategies)
+  Uses a practical, real-world heuristic: if a probe response body is <10% or >1000% of the baseline size, it's a different page (404/redirect/error), not SQLi. Normal page data variation (empty list vs full list) stays within 2-3x, well inside the [0.10, 10.0] threshold. No regex, no HTML parsing — just integer division. This replaces the earlier structural-similarity approach which failed on SPAs (all routes share the same empty HTML shell) and was O(n) regex over full response bodies.
+
 ### High-Priority Fixes
 
 - **H1** `hashRequestBody`: Returns random UUID on exception instead of `""`, preventing silent dedup failure from empty-string collisions.

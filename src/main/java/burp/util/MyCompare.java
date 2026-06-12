@@ -47,22 +47,28 @@ public class MyCompare {
         return levenshteinImpl(a, b, 0.0);
     }
 
-    /** Levenshtein + 剥离前后缀 (pocA→短串, pocB→长串, 匹配DetSql语义) */
+    /** Levenshtein + 剥离前后缀
+     *  pocA 作用于参数 a 的差异部分，pocB 作用于参数 b 的差异部分
+     *  (不再按长度分配 POC，避免 StringInjection Step2 等场景的语义错位)
+     */
     public static double levenshteinStripped(String a, String b, String pocA, String pocB) {
         String shorter = a.length() <= b.length() ? a : b;
         String longer  = a.length() <= b.length() ? b : a;
         String[] stripped = upgradeStr(shorter, longer);
         if (stripped[0].isEmpty() && stripped[1].isEmpty()) return 1.0;
 
-        // pocA只作用于短串(通常是探针A的残留), pocB只作用于长串(探针B的残留)
-        String s0 = stripped[0], s1 = stripped[1];
-        if (pocA != null && !pocA.isEmpty()) s0 = s0.replaceAll(pocA, "");
-        if (pocB != null && !pocB.isEmpty()) s1 = s1.replaceAll(pocB, "");
+        // stripped[0]=shorter的差异, stripped[1]=longer的差异
+        // 映射回参数 a / b 各自对应的差异部分
+        boolean aIsShorter = a.length() <= b.length();
+        String diffA = aIsShorter ? stripped[0] : stripped[1];
+        String diffB = aIsShorter ? stripped[1] : stripped[0];
+        if (pocA != null && !pocA.isEmpty()) diffA = diffA.replaceAll(pocA, "");
+        if (pocB != null && !pocB.isEmpty()) diffB = diffB.replaceAll(pocB, "");
 
-        if (s0.isEmpty() && s1.isEmpty()) return 1.0;
-        if (s0.isEmpty() || s1.isEmpty()) return 0.0;
+        if (diffA.isEmpty() && diffB.isEmpty()) return 1.0;
+        if (diffA.isEmpty() || diffB.isEmpty()) return 0.0;
 
-        return levenshtein(s0, s1);
+        return levenshtein(diffA, diffB);
     }
 
     /** 格式化为百分比字符串 */

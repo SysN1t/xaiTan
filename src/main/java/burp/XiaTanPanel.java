@@ -90,6 +90,10 @@ public class XiaTanPanel extends JPanel {
         // -- Results table --
         resultTable = createTable(tableModel, new int[]{32, 105, 36, 175, 68, 48, 52, 138, 38});
         resultTable.setAutoCreateRowSorter(true);
+        resultTable.getRowSorter().setSortKeys(
+                java.util.Collections.singletonList(
+                        new javax.swing.RowSorter.SortKey(0, javax.swing.SortOrder.DESCENDING)));
+        ((javax.swing.DefaultRowSorter<?, ?>) resultTable.getRowSorter()).setSortsOnUpdates(false);
         resultTable.getSelectionModel().addListSelectionListener(e -> {
             if (e.getValueIsAdjusting()) return;
             int viewRow = resultTable.getSelectedRow();
@@ -116,6 +120,10 @@ public class XiaTanPanel extends JPanel {
         // -- Logs table --
         logTable = createTable(logModel, new int[]{28, 46, 36, 175, 62, 155, 36, 46, 52});
         logTable.setAutoCreateRowSorter(true);
+        logTable.getRowSorter().setSortKeys(
+                java.util.Collections.singletonList(
+                        new javax.swing.RowSorter.SortKey(0, javax.swing.SortOrder.DESCENDING)));
+        ((javax.swing.DefaultRowSorter<?, ?>) logTable.getRowSorter()).setSortsOnUpdates(false);
         logTable.getSelectionModel().addListSelectionListener(e -> {
             if (e.getValueIsAdjusting()) return;
             int viewRow = logTable.getSelectedRow();
@@ -191,6 +199,8 @@ public class XiaTanPanel extends JPanel {
                 cb("NoSQLi",true,v->scanEngine.enableNoSQLi=v),
                 cb("延时",true, v->scanEngine.enableTimeSQLi=v),
                 cb("Cookie",false,v->scanEngine.enableCookie=v)));
+        row0.add(buildSwitchGroup("WAF",
+                cb("绕过",true, v->scanEngine.enableWafBypass=v)));
         row0.add(sep());
         row0.add(buildSwitchGroup("监控",
                 cb("代理",false,v->{if(extender!=null)extender.monitorProxy=v;}),
@@ -206,22 +216,22 @@ public class XiaTanPanel extends JPanel {
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         row1.setBackground(BG_HEADER);
         row1.add(lbl("排除参数:"));
-        JTextField tEx = tf("csrf,token,_t,timestamp", 14);
+        JTextField tEx = tf(scanEngine.excludeParams, 14);
         sync(tEx, v->{scanEngine.excludeParams=v; scanEngine.savePersistedConfig();});
         row1.add(tEx);
         row1.add(sep());
         row1.add(lbl("请求间隔:"));
-        JTextField tDl = tf("0", 3);
+        JTextField tDl = tf(String.valueOf(scanEngine.delayMs), 3);
         syncNum(tDl,"0", v->scanEngine.delayMs=Integer.parseInt(v.trim()));
         row1.add(tDl);
         row1.add(lbl("ms"));
         row1.add(lbl(" 延时阈值:"));
-        JTextField tTt = tf("5000", 4);
+        JTextField tTt = tf(String.valueOf(scanEngine.timeThreshold), 4);
         syncNum(tTt,"5000", v->scanEngine.timeThreshold=Long.parseLong(v.trim()));
         row1.add(tTt);
         row1.add(lbl("ms"));
         row1.add(lbl(" 相似度:"));
-        JTextField tSm = tf("0.9", 3);
+        JTextField tSm = tf(String.valueOf(scanEngine.simThreshold), 3);
         syncNum(tSm,"0.9", v->scanEngine.simThreshold=Double.parseDouble(v.trim()));
         row1.add(tSm);
 
@@ -418,6 +428,8 @@ public class XiaTanPanel extends JPanel {
         input.setText("");
     }
 
+    private javax.swing.Timer saveDebounce;
+
     private void syncModel(DefaultListModel<String> model, Consumer<String> sync) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < model.size(); i++) {
@@ -426,7 +438,12 @@ public class XiaTanPanel extends JPanel {
         }
         sync.accept(sb.toString());
         updateFilterButtonText();
-        scanEngine.savePersistedConfig();
+        // 防抖：1 秒内多次变更只写一次磁盘
+        if (saveDebounce == null) {
+            saveDebounce = new javax.swing.Timer(1000, e -> scanEngine.savePersistedConfig());
+            saveDebounce.setRepeats(false);
+        }
+        saveDebounce.restart();
     }
 
     private void updateFilterButtonText() {
@@ -451,9 +468,10 @@ public class XiaTanPanel extends JPanel {
     }
 
     private void copySelected(java.util.function.Function<ScanResult, String> fn) {
-        int r = resultTable.getSelectedRow();
-        if (r >= 0) {
-            ScanResult s = tableModel.getResult(r);
+        int viewRow = resultTable.getSelectedRow();
+        if (viewRow >= 0) {
+            int modelRow = resultTable.convertRowIndexToModel(viewRow);
+            ScanResult s = tableModel.getResult(modelRow);
             if (s != null) Toolkit.getDefaultToolkit().getSystemClipboard()
                     .setContents(new java.awt.datatransfer.StringSelection(fn.apply(s)), null);
         }

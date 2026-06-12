@@ -21,23 +21,35 @@ public class NumericInjection extends AbstractInjectionStrategy {
         String val = param.value();
         if(val==null || !val.matches("^-?\\d+(\\.\\d+)?")) return null;
 
+        // Phase 1: 追加算术 (保持原值上下文)
         lastPayload.set("-0-0-0");
         HttpRequestResponse rr1 = send(append(origReq, param, lastPayload.get()));
-        if(rr1==null) return null;
-        String body1 = body(rr1);
-        if(MyCompare.similarity(baseBody, body1) < sim()) return null;
+        if(rr1!=null && !isDifferentPage(baseBody, body(rr1))
+                && MyCompare.similarity(baseBody, body(rr1)) >= sim()) {
 
-        lastPayload.set("-abc");
-        HttpRequestResponse rr2 = send(append(origReq, param, lastPayload.get()));
-        if(rr2==null) return null;
-        String body2 = body(rr2);
-        if(MyCompare.similarity(baseBody, body2) >= sim()) return null;
-        if(MyCompare.similarity(body1, body2) >= sim()) return null;
+            lastPayload.set("-abc");
+            HttpRequestResponse rr2 = send(append(origReq, param, lastPayload.get()));
+            if(rr2!=null && !isDifferentPage(baseBody, body(rr2))
+                    && MyCompare.similarity(baseBody, body(rr2)) < sim()
+                    && MyCompare.similarity(body(rr1), body(rr2)) < sim()) {
+                return rr2;
+            }
+        }
 
-        // 第三步确认：-0 等价变换应与基线相同（排除输入校验导致的误报）
-        lastPayload.set("-0");
-        HttpRequestResponse rr3 = send(append(origReq, param, lastPayload.get()));
-        if(rr3 != null && MyCompare.similarity(baseBody, body(rr3)) >= sim()) return rr2;
+        // Phase 2: 替换为除法 (独立于 Phase 1)
+        lastPayload.set("1/0");
+        HttpRequestResponse rr3 = send(replace(origReq, param, lastPayload.get()));
+        if (rr3 != null && !isDifferentPage(baseBody, body(rr3))
+                && MyCompare.similarity(baseBody, body(rr3)) < sim()) {
+
+            lastPayload.set("1/1");
+            HttpRequestResponse rr4 = send(replace(origReq, param, lastPayload.get()));
+            if (rr4 != null && !isDifferentPage(baseBody, body(rr4))
+                    && MyCompare.similarity(body(rr3), body(rr4)) < sim()) {
+                return rr3;
+            }
+        }
+
         return null;
     }
 }

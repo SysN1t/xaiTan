@@ -42,6 +42,7 @@ public class ScanEngine {
 
     volatile boolean enableXSS=true, enableSQLi=true, enableSSTI=true, enableNoSQLi=true;
     volatile boolean enableTimeSQLi=true, enableCookie=false;
+    volatile boolean enableWafBypass=true;
     volatile boolean scanAdd=false, scanDel=false, scanMod=false;
     volatile int delayMs=0;
     volatile long timeThreshold;
@@ -71,8 +72,7 @@ public class ScanEngine {
         loadPersistedConfig();
         this.sqliStrategies = Arrays.asList(
             new ErrorBasedInjection(api),
-            new BooleanBlindInjection(api),
-            new StringInjection(api),
+            new UnifiedStringInjection(api),
             new NumericInjection(api),
             new OrderByInjection(api)
         );
@@ -106,7 +106,9 @@ public class ScanEngine {
             excludeParams   = p.getProperty("exclude.params", excludeParams);
             timeThreshold   = Long.parseLong(p.getProperty("time.threshold", String.valueOf(timeThreshold)));
             simThreshold    = Double.parseDouble(p.getProperty("sim.threshold", String.valueOf(simThreshold)));
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            api.logging().logToOutput("[xia_tan] 配置加载失败，使用默认值: " + e.getMessage());
+        }
     }
 
     public void savePersistedConfig() {
@@ -119,14 +121,14 @@ public class ScanEngine {
             p.setProperty("exclude.params", nvl(excludeParams));
             p.setProperty("time.threshold", String.valueOf(timeThreshold));
             p.setProperty("sim.threshold", String.valueOf(simThreshold));
-            p.store(new java.io.FileWriter(f), "xia_tan v2.1 user config");
+            p.store(new java.io.FileWriter(f), "xia_tan v2.1.1 user config");
         } catch (Exception ignored) {}
     }
 
     private static String nvl(String s) { return s != null ? s : ""; }
 
     static class ScanConfig {
-        boolean xss, sqli, ssti, nosqli, timeSqli, cookie, scanAdd, scanDel, scanMod;
+        boolean xss, sqli, ssti, nosqli, timeSqli, cookie, wafBypass, scanAdd, scanDel, scanMod;
         int delay; long timeThresh; double simThresh;
         String excludeP, domainWL, domainBL, pathBL, pathWL;
     }
@@ -134,7 +136,7 @@ public class ScanEngine {
     ScanConfig captureConfig() {
         ScanConfig c = new ScanConfig();
         c.xss=enableXSS; c.sqli=enableSQLi; c.ssti=enableSSTI; c.nosqli=enableNoSQLi;
-        c.timeSqli=enableTimeSQLi; c.cookie=enableCookie;
+        c.timeSqli=enableTimeSQLi; c.cookie=enableCookie; c.wafBypass=enableWafBypass;
         c.delay=delayMs; c.timeThresh=timeThreshold; c.simThresh=simThreshold;
         c.excludeP=excludeParams; c.domainWL=domainWhitelist; c.domainBL=domainBlacklist;
         c.pathBL=pathBlacklist; c.pathWL=pathWhitelist;
@@ -157,7 +159,11 @@ public class ScanEngine {
         return id;
     }
     public void scanAsync(HttpRequestResponse rr, ScanConfig c) {
-        executor.submit(() -> doScan(rr, c));
+        String id = UUID.randomUUID().toString().substring(0, 8);
+        Future<?> f = executor.submit(() -> {
+            try { doScan(rr, c); } finally { activeScans.remove(id); }
+        });
+        activeScans.put(id, f);
     }
 
     // ==================== Core Scan Logic ====================
@@ -215,23 +221,29 @@ public class ScanEngine {
         Set<String> excl = parseSet(cfg.excludeP);
 
         // 扫描 URL/body 参数（含编码检测）
+        boolean sqliFound = false;
         for (ParsedHttpParameter param : req.parameters()) {
             if (excl.contains(param.name().toLowerCase())) continue;
-            if (param.value().length() > MAX_PARAM_LEN) continue;
-            scanWithEncoding(req, baseRR, param, baseBody, cfg, host, method, path, respCt, isJsonReq, baselineSqlErr, baselineNoSqlErr, excl);
+            String pv = param.value();
+            if (pv == null || pv.length() > MAX_PARAM_LEN) continue;
+            if (scanWithEncoding(req, baseRR, param, baseBody, cfg, host, method, path, respCt, isJsonReq, baselineSqlErr, baselineNoSqlErr, excl)) {
+                sqliFound = true;
+                break;
+            }
         }
 
-        // 请求头注入探测（User-Agent / Referer / X-Forwarded-For 等）
-        if (cfg.sqli) {
+        // 请求头注入探测（仅当 SQLi 未命中时）
+        if (cfg.sqli && !sqliFound) {
             probeHeaderInjection(req, baseBody, cfg, host, method, path, baselineSqlErr);
         }
 
-        // Montoya API 不返回 Cookie 参数 — Cookie 开关打开时手工解析
-        if (cfg.cookie) {
+        // Cookie 参数（仅当 SQLi 未命中时）
+        if (cfg.cookie && !sqliFound) {
             for (HttpParameter param : extractCookieParams(req)) {
                 if (excl.contains(param.name().toLowerCase())) continue;
-                if (param.value().length() > MAX_PARAM_LEN) continue;
-                scanWithEncoding(req, baseRR, param, baseBody, cfg, host, method, path, respCt, isJsonReq, baselineSqlErr, baselineNoSqlErr, excl);
+                String cv = param.value();
+                if (cv == null || cv.length() > MAX_PARAM_LEN) continue;
+                if (scanWithEncoding(req, baseRR, param, baseBody, cfg, host, method, path, respCt, isJsonReq, baselineSqlErr, baselineNoSqlErr, excl)) break;
             }
         }
     }
@@ -266,6 +278,10 @@ public class ScanEngine {
             if (rr2 == null || rr2.response() == null) continue;
             String body2 = rr2.response().bodyToString();
 
+            // 体量异常过滤：修改 Header 导致 404/302 → 非注入
+            if (isHeaderProbeDiffPage(baseBody, body1)
+                    || isHeaderProbeDiffPage(baseBody, body2)) continue;
+
             // 两个探针都产生差异才确认（排除单次网络波动）
             // 小响应体 (<500B) 用 Levenshtein 替代 Jaccard
             boolean smallBody = baseBody.length() < 500;
@@ -288,12 +304,13 @@ public class ScanEngine {
 
     // ==================== XSS + SSTI ====================
 
-    private void probeXSS_SSTI(HttpRequest req, HttpRequestResponse baseRR,
+    /** @return true 如果检测到任何反射 (XSS 或 SSTI) */
+    private boolean probeXSS_SSTI(HttpRequest req, HttpRequestResponse baseRR,
                                 HttpParameter param, String baseBody, ScanConfig cfg,
                                 String host, String method, String path, boolean isJson) {
         boolean doXss = cfg.xss && !isJson && !baseBody.contains(XSSDetector.MARKER);
         boolean doSsti = cfg.ssti;
-        if (!doXss && !doSsti) return;
+        if (!doXss && !doSsti) return false;
 
         StringBuilder sb = new StringBuilder();
         if (doXss) sb.append(XSSDetector.getCombinedPayload());
@@ -306,19 +323,20 @@ public class ScanEngine {
                 HttpParameter.parameter(param.name(), (pv != null ? pv : "") + payload, param.type()));
         HttpRequestResponse rr = sendProbe(modReq, path, param.name(), payload);
 
-        if (rr==null || rr.response()==null) return;
+        if (rr==null || rr.response()==null) return false;
         String body = rr.response().bodyToString();
+        boolean reported = false;
 
         if (doXss && !isJsonResponse(rr)) {
             for (String[] f : XSSDetector.analyze(body)) {
                 report(host, method, path, param.name(), "XSS", f[0], f[1], f[2], rr);
+                reported = true;
             }
         }
         if (doSsti) {
             for (int i=0; i<SSTIDetector.EXPECTED_STRINGS.length; i++) {
                 if (body.contains(SSTIDetector.EXPECTED_STRINGS[i])
                         && !baseBody.contains(SSTIDetector.EXPECTED_STRINGS[i])) {
-                    // 二次确认：模板语法本身不能出现在响应中（说明被执行了而非回显）
                     String syntax = String.valueOf(SSTIDetector.OPERANDS[i][0])
                             + "*" + SSTIDetector.OPERANDS[i][1];
                     boolean syntaxEchoed = body.contains(syntax);
@@ -327,9 +345,11 @@ public class ScanEngine {
                             "Computed " + syntax + "=" + SSTIDetector.EXPECTED_STRINGS[i]
                                     + (syntaxEchoed ? " (syntax also echoed — may be false positive)" : " found"),
                             syntaxEchoed ? "Medium" : "High", rr);
+                    reported = true;
                 }
             }
         }
+        return reported;
     }
 
     // ==================== NoSQLi ====================
@@ -339,10 +359,13 @@ public class ScanEngine {
                                  String host, String method, String path, String baselineNoSqlErr) {
         boolean found = false;
         String body = req.bodyToString();
+        if (body == null) return false;
         for (String[] op : NoSQLiDetector.OPERATOR_PAYLOADS) {
             String mod = NoSQLiDetector.buildOperatorPayload(body, param.name(), op[0]);
             if (mod.equals(body))
                 mod = NoSQLiDetector.buildOperatorPayloadNumeric(body, param.name(), op[0]);
+            if (mod.equals(body))
+                mod = NoSQLiDetector.buildOperatorPayloadAny(body, param.name(), op[0]);
             if (mod.equals(body)) continue;
 
             delay(cfg);
@@ -412,9 +435,26 @@ public class ScanEngine {
 
     // ==================== Filters & Helpers ====================
 
+    /** Header 注入专用体量异常检测 (不依赖 ThreadLocal，静态计算) */
+    private static boolean isHeaderProbeDiffPage(String base, String probe) {
+        if (base == null || probe == null) return false;
+        int bl = base.length(), pl = probe.length();
+        if (bl == 0 && pl == 0) return false;
+        if (bl == 0 || pl == 0) return true;
+        double r = (double) pl / bl;
+        if (r < 0.10 || r > 10.0) return true;
+        if (bl >= 3000 && pl < 500) return true;
+        return false;
+    }
+
     private boolean isStatic(String path) {
-        String l=path.toLowerCase();
-        for (String e:STATIC_EXTS) if (l.endsWith(e)) return true;
+        // 剥离 query string，避免 style.css?v=111 绕过静态检测
+        if (path != null) {
+            int q = path.indexOf('?');
+            if (q >= 0) path = path.substring(0, q);
+        }
+        String l = path != null ? path.toLowerCase() : "";
+        for (String e : STATIC_EXTS) if (l.endsWith(e)) return true;
         return false;
     }
 
@@ -426,6 +466,9 @@ public class ScanEngine {
     }
 
     private boolean matches(String p, String[] kws) {
+        // 剥离 query string，避免 /api/delete?id=1 中 "delete?id=1" 无法匹配 "delete"
+        int qi = p.indexOf('?');
+        if (qi >= 0) p = p.substring(0, qi);
         for (String seg:p.split("/")) {
             String l=seg.toLowerCase();
             for (String kw:kws) {
@@ -485,8 +528,8 @@ public class ScanEngine {
         return list;
     }
 
-    /** 检测编码 → 解码 → 注入 → 重新编码 → 发送（所有参数通用） */
-    private void scanWithEncoding(HttpRequest req, HttpRequestResponse baseRR,
+    /** @return true 如果检测到 SQLi (调用方可跳过后继参数) */
+    private boolean scanWithEncoding(HttpRequest req, HttpRequestResponse baseRR,
                                    HttpParameter param, String baseBody, ScanConfig cfg,
                                    String host, String method, String path,
                                    String respCt, boolean isJsonReq,
@@ -501,29 +544,32 @@ public class ScanEngine {
             probeParam = HttpParameter.parameter(param.name(), enc.decoded, param.type());
         }
 
-        scanOneParam(req, baseRR, probeParam, baseBody, cfg, host, method, path, respCt, isJsonReq, baselineSqlErr, baselineNoSqlErr, excl);
+        boolean sqliHit = scanOneParam(req, baseRR, probeParam, baseBody, cfg, host, method, path, respCt, isJsonReq, baselineSqlErr, baselineNoSqlErr, excl);
 
-        // 清除编码类型
         for (AbstractInjectionStrategy s : sqliStrategies) s.setCookieEncoding(EncodingDetector.Type.NONE);
         timeBased.setCookieEncoding(EncodingDetector.Type.NONE);
+        return sqliHit;
     }
 
-    /** 对单个参数执行完整探测（XSS/SSTI/SQLi/NoSQLi 各模块独立） */
-    private void scanOneParam(HttpRequest req, HttpRequestResponse baseRR,
+    /** @return true 如果检测到 SQLi */
+    private boolean scanOneParam(HttpRequest req, HttpRequestResponse baseRR,
                                HttpParameter param, String baseBody, ScanConfig cfg,
                                String host, String method, String path,
                                String respCt, boolean isJsonReq,
                                String baselineSqlErr, String baselineNoSqlErr,
                                Set<String> excl) {
+        boolean sqliHit = false;
         try {
             // XSS Phase 1：HTML 标签反射 + SSTI 合并探针
+            boolean phase1Reflected = false;
             if (cfg.xss || cfg.ssti) {
-                probeXSS_SSTI(req, baseRR, param, baseBody, cfg, host, method, path,
+                phase1Reflected = probeXSS_SSTI(req, baseRR, param, baseBody, cfg, host, method, path,
                         respCt != null && respCt.contains("json"));
             }
 
             // XSS Phase 2：事件注入 / 属性注入 / JS 上下文
-            if (cfg.xss && respCt != null && !respCt.contains("json")) {
+            // 仅当 Phase 1 检测到任何反射时才执行（减少无效探测）
+            if (cfg.xss && phase1Reflected && respCt != null && !respCt.contains("json")) {
                 for (String[] probe : XSSDetector.ADVANCED_PROBES) {
                     delay(cfg);
                     String pv2 = param.value();
@@ -545,12 +591,13 @@ public class ScanEngine {
             if (cfg.sqli) {
                 for (AbstractInjectionStrategy strat : sqliStrategies) {
                     strat.setSimThreshold(cfg.simThresh);
+                    strat.setWafBypass(cfg.wafBypass);
                     delay(cfg);
                     HttpRequestResponse probeRR = strat.execute(req, baseRR, param, baseBody);
                     if (probeRR != null) {
                         String sev = "High";
-                        // 布尔盲注无 DB 报错时降级为 Medium（避免 PHP || 逻辑或误报）
-                        if (strat instanceof BooleanBlindInjection) {
+                        // UnifiedString 盲注无 DB 报错时降级为 Medium
+                        if (strat instanceof UnifiedStringInjection) {
                             String err = ErrorBasedInjection.detectError(
                                     probeRR.response() != null ? probeRR.response().bodyToString() : "");
                             if (err == null || (baselineSqlErr != null && baselineSqlErr.equals(err)))
@@ -558,6 +605,7 @@ public class ScanEngine {
                         }
                         report(host, method, path, param.name(), "SQLi",
                                 strat.getVulnType(), strat.getPayload(), sev, probeRR);
+                        sqliHit = true;
                         break;
                     }
                 }
@@ -566,10 +614,12 @@ public class ScanEngine {
             // 延时注入：独立于 SQLi 链
             if (cfg.sqli && cfg.timeSqli) {
                 timeBased.setTimeThreshold(cfg.timeThresh);
+                timeBased.setWafBypass(cfg.wafBypass);
                 HttpRequestResponse probeRR = timeBased.execute(req, baseRR, param, baseBody);
                 if (probeRR != null) {
                     report(host, method, path, param.name(), "SQLi",
                             timeBased.getVulnType(), timeBased.getPayload(), "High", probeRR);
+                    sqliHit = true;
                 }
             }
 
@@ -580,6 +630,7 @@ public class ScanEngine {
         } catch (Exception e) {
             api.logging().logToOutput("[xia_tan] error: " + param.name() + " - " + e.getMessage());
         }
+        return sqliHit;
     }
 
     private Set<String> parseSet(String csv) {

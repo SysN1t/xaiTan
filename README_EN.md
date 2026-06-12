@@ -1,12 +1,12 @@
-# xia_tan v2.1 — BurpSuite Multi-Vulnerability Scanner
+# xia_tan v2.1.1 — BurpSuite Multi-Vulnerability Scanner
 
-> **A complete rewrite of xia_tan v1.0** | Author: **SysN3t** | Montoya API (BurpSuite ≥ 2023.12.1) | Incorporating SQLi detection strategies from [DetSql](https://github.com/saoshao/DetSql).
+> Author: **SysN3t** | Montoya API (BurpSuite ≥ 2023.12.1) | WAF bypass · Minimal payloads
 
 ## Quick Start
 
 **Requirements**: BurpSuite ≥ 2023.12.1, JDK 1.8+
 
-**Install**: Extensions → Add → Java → select `xia_tan-2.0.jar`
+**Install**: Extensions → Add → Java → select `xia_tan-2.1.1.jar`
 
 **Full documentation**: see [README.md](README.md) (Chinese)
 
@@ -28,14 +28,13 @@
 
 ## Detection Strategies (SQLi)
 
-| Strategy | Approach |
-|----------|----------|
-| ErrorBased | `'`, `"`, `\` triggers → regex match 10 DB error patterns |
-| BooleanBlind | `EXP(710)` overflow vs `EXP(290)` normal vs `1/1` confirm |
-| StringInjection | `'` → `''` → `'+'` → `'||'` 4-step ladder |
-| NumericInjection | `-0-0-0` (equiv) vs `-abc` (syntax break) |
-| OrderByInjection | `,0` → `,xxxxxx` → `,1` / `,2` ladder |
-| TimeBasedInjection | SLEEP/WAITFOR polling + 2× baseline timing |
+| Strategy | Approach | Reqs |
+|----------|----------|------|
+| ErrorBased | `'` `"` `\` `')` `'))` `")` → regex match 10 DB errors | 6 |
+| UnifiedString | Reuse `'` → `''` fix → `1=1`/`1=2` boolean → `'||'||'` Oracle | 0~3 |
+| NumericInjection | Append: `-0-0-0`→`-abc` \| Replace: `1/0`→`1/1` | 0~4 |
+| OrderByInjection | `,0` → `,xxxxxx` → `,1` ladder | 0~3 |
+| TimeBasedInjection | SLEEP/WAITFOR/pg_sleep/DBMS_PIPE (`'` `"` `')` `")` ×4 DBs) | 0~16 |
 
 ## Similarity Engine (MyCompare)
 
@@ -57,7 +56,7 @@ javac --release 8 -cp lib/montoya-api-2026.4.jar -d build/classes \
   src/main/java/burp/util/*.java \
   src/main/java/burp/injection/*.java
 
-jar cf build/libs/xia_tan-2.1.jar -C build/classes burp -C src/main/resources xia_tan.properties
+jar cf build/libs/xia_tan-2.1.1.jar -C build/classes burp -C src/main/resources xia_tan.properties
 ```
 
 ## License
