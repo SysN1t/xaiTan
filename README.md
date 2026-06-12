@@ -1,10 +1,10 @@
-# xia_tan (瞎探) v2.1.2 — BurpSuite 多漏洞自动化探测插件
+# xia_tan (瞎探) v2.2 — BurpSuite 多漏洞自动化探测插件
 
 > **基于 xia_tan v1.0 二次开发** | Author: **SysN3t** | Montoya API (BurpSuite ≥ 2023.12.1) | WAF 绕过 · 最少 payload · 基础探测
 
 通过修改请求参数对常见 Web 漏洞进行**自动化初步探测**的 BurpSuite 扩展插件。支持反射 XSS、SQL 注入（4 种策略链）、SSTI 模板注入（6 大家族 20+ 引擎）、NoSQL 注入。
 
-> **v2.1.2**：Montoya API（BurpSuite ≥ 2023.12.1）。最少 payload 最大化覆盖、全配置持久化、请求超时保护、线程池背压。
+> **v2.2**：Montoya API（BurpSuite ≥ 2023.12.1）。三 Tab 界面（检测结果/探测日志/请求详情）、树形折叠展开、逐参数追踪过滤、WAF 绕过组合链（大小写+注释+Tab+多连接符）、命中即停、全配置持久化、请求超时保护、线程池背压。
 
 ---
 
@@ -74,11 +74,16 @@
 - **请求头注入**：探测 User-Agent / Referer / X-Forwarded-For / X-Real-IP
 - **CUD 过滤**：默认跳过增/删/改接口
 - **黑白名单**：2×2 面板，域名+路径各含白名单/黑名单，实时计数，支持通配符
-- **Logs 标签页**：所有探测流量实时展示，点击查看完整数据包
+- **三 Tab 界面**：检测结果 / 探测日志（仅命中）/ 请求详情（树形折叠，点击 [+] 展开逐参数明细）
+- **请求详情折叠**：按 URL 分组，默认折叠一行，点击 `[+]` 展开显示过滤原因/Payload/状态码/耗时
+- **状态栏统计**：实时显示请求数/过滤数/命中数/超时数/内存/运行时间
 - **手动停止**：一键取消所有进行中扫描
 - **两层去重**：REST 路径签名 + SHA-256 内容哈希
 - **模块独立**：XSS/SSTI/SQLi/NoSQLi 互不干扰，SQLi 内部命中即停
-- **排序**：表格点击列头排序
+- **WAF 绕过组合**：大小写随机化 + 注释填充 `/**/` + Tab 替换 `\t`，随机组合 1-3 种 + 7 种空格连接符
+- **请求过滤链**：域名/路径白黑名单 → 静态文件 → CUD → 方法过滤 → 空 JSON → 去重 → 参数级过滤
+- **探针超时保护**：每个探针 20s 超时，线程池背压防 OOM
+- **全配置持久化**：所有开关/文本框写入 `~/.xia_tan/config.properties`，重启保留
 
 ---
 
@@ -262,7 +267,7 @@ javac --release 8 -cp lib/montoya-api-2026.4.jar \
   src/main/java/burp/injection/*.java
 
 # 打包 JAR
-jar cf build/libs/xia_tan-2.1.1.jar -C build/classes burp -C src/main/resources xia_tan.properties
+jar cf build/libs/xia_tan-2.2.jar -C build/classes burp -C src/main/resources xia_tan.properties
 ```
 
 产物路径：`build/libs/xia_tan-2.1.1.jar`
